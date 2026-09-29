@@ -195,6 +195,31 @@ dotnet src/DesktopComputerUse.Server/bin/Debug/net8.0-windows/DesktopComputerUse
 
 Self-contained release archives contain an executable named `desktop-computer-use` on Linux or `desktop-computer-use.exe` on Windows.
 
+Launch a self-contained release **directly**. Do not use `dotnet desktop-computer-use.exe`; the `dotnet` host treats the native app host as a framework-dependent assembly and reports a missing `hostpolicy.dll` or `.runtimeconfig.json`.
+
+Windows MCP configuration:
+
+```json
+{
+  "servers": {
+    "desktop-computer-use": {
+      "type": "stdio",
+      "command": "C:/Users/you/Downloads/desktop-computer-use-windows-x64/desktop-computer-use.exe",
+      "args": [],
+      "env": {
+        "DESKTOP_COMPUTER_USE_PROFILES": "C:/automation/profiles"
+      }
+    }
+  }
+}
+```
+
+PowerShell smoke test:
+
+```powershell
+& "C:\Users\you\Downloads\desktop-computer-use-windows-x64\desktop-computer-use.exe"
+```
+
 Configure the command as a stdio MCP server in the host application. MCP host configuration formats vary, but a typical entry resembles:
 
 ```json
@@ -213,6 +238,8 @@ Configure the command as a stdio MCP server in the host application. MCP host co
   }
 }
 ```
+
+The `dotnet` command form above is only for a framework-dependent `.dll` produced by a normal build. Use the executable directly for downloaded release archives.
 
 Do not redirect server logs to stdout. MCP protocol messages use stdout; the server configures console logging to stderr.
 
