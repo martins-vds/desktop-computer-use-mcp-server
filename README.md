@@ -9,7 +9,7 @@ The native automation implementation uses:
 - [FlaUI](https://github.com/FlaUI/FlaUI) with configurable UIA2 and UIA3 backends
 - Local stdio transport
 
-Release archives are produced for Windows x64 and Linux x64. The Windows executable contains the full FlaUI automation implementation. The Linux executable exposes the same MCP discovery surface and can list profiles, but native Windows Forms actions return an explicit `PlatformNotSupported` result.
+Release archives are produced for Windows and Linux on both x64 and ARM64. The Windows executable contains the full FlaUI automation implementation. The Linux executable exposes the same MCP discovery surface and can list profiles, but native Windows Forms actions return an explicit `PlatformNotSupported` result.
 
 The repository still contains the original Playwright browser-test scaffold. Playwright is separate from the native desktop server and is not used to automate normal Windows Forms controls.
 
@@ -307,7 +307,9 @@ git push origin v1.0.0
 The workflow builds and attaches:
 
 - `desktop-computer-use-windows-x64.zip`
+- `desktop-computer-use-windows-arm64.zip`
 - `desktop-computer-use-linux-x64.tar.gz`
+- `desktop-computer-use-linux-arm64.tar.gz`
 - `SHA256SUMS.txt`
 
 Manual dispatch can create a release tag at the selected commit when the tag does not already exist.

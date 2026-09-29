@@ -47,10 +47,18 @@ jobs:
             rid: linux-x64
             project: src/DesktopComputerUse.Server.Linux/DesktopComputerUse.Server.Linux.csproj
             asset: desktop-computer-use-linux-x64
+          - os: ubuntu-latest
+            rid: linux-arm64
+            project: src/DesktopComputerUse.Server.Linux/DesktopComputerUse.Server.Linux.csproj
+            asset: desktop-computer-use-linux-arm64
           - os: windows-latest
             rid: win-x64
             project: src/DesktopComputerUse.Server/DesktopComputerUse.Server.csproj
             asset: desktop-computer-use-windows-x64
+          - os: windows-latest
+            rid: win-arm64
+            project: src/DesktopComputerUse.Server/DesktopComputerUse.Server.csproj
+            asset: desktop-computer-use-windows-arm64
     runs-on: ${{ matrix.os }}
     steps:
       - name: Check out repository
