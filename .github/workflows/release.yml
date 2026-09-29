@@ -1,0 +1,145 @@
+name: Release executables
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag, for example v1.0.0
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Restore
+        run: dotnet restore DesktopComputerUse.sln
+
+      - name: Build
+        run: dotnet build DesktopComputerUse.sln --configuration Release --no-restore
+
+      - name: Test
+        run: dotnet test DesktopComputerUse.sln --configuration Release --no-build
+
+  publish:
+    name: Publish ${{ matrix.asset }}
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            rid: linux-x64
+            project: src/DesktopComputerUse.Server.Linux/DesktopComputerUse.Server.Linux.csproj
+            asset: desktop-computer-use-linux-x64
+          - os: windows-latest
+            rid: win-x64
+            project: src/DesktopComputerUse.Server/DesktopComputerUse.Server.csproj
+            asset: desktop-computer-use-windows-x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Restore publish dependencies
+        shell: bash
+        run: dotnet restore "${{ matrix.project }}" --runtime "${{ matrix.rid }}"
+
+      - name: Publish single-file executable
+        shell: bash
+        run: >-
+          dotnet publish "${{ matrix.project }}"
+          --configuration Release
+          --runtime "${{ matrix.rid }}"
+          --self-contained true
+          --no-restore
+          --output publish
+          -p:PublishSingleFile=true
+          -p:IncludeNativeLibrariesForSelfExtract=true
+          -p:DebugType=None
+          -p:DebugSymbols=false
+
+      - name: Stage release files
+        shell: bash
+        run: |
+          mkdir -p package/profiles
+          cp README.md package/
+          cp profiles/example.application.json package/profiles/
+          cp publish/appsettings.json package/
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            cp publish/desktop-computer-use.exe package/
+          else
+            cp publish/desktop-computer-use package/
+            chmod +x package/desktop-computer-use
+          fi
+
+      - name: Create Linux archive
+        if: runner.os == 'Linux'
+        shell: bash
+        run: tar -C package -czf "${{ matrix.asset }}.tar.gz" .
+
+      - name: Create Windows archive
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Compress-Archive -Path package\* -DestinationPath "${{ matrix.asset }}.zip"
+
+      - name: Upload packaged executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: ${{ matrix.asset }}.*
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: Publish GitHub release
+    needs: publish
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Download packaged executables
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Generate checksums
+        working-directory: release-assets
+        run: sha256sum desktop-computer-use-* > SHA256SUMS.txt
+
+      - name: Create or update release
+        shell: bash
+        run: |
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" release-assets/* --clobber
+          else
+            gh release create "$RELEASE_TAG" release-assets/* \
+              --target "$GITHUB_SHA" \
+              --title "Desktop Computer Use $RELEASE_TAG" \
+              --generate-notes
+          fi

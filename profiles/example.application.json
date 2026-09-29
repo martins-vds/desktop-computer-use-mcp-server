@@ -1,0 +1,52 @@
+{
+  "id": "test-winforms-app",
+  "displayName": "Desktop Computer Use Test App",
+  "executablePath": "../tests/DesktopComputerUse.TestApp/bin/Debug/net8.0-windows/DesktopComputerUse.TestApp.exe",
+  "backend": "uia3",
+  "mainWindow": {
+    "title": "Desktop Computer Use Test App"
+  },
+  "operationTimeoutMs": 10000,
+  "pollIntervalMs": 100,
+  "maxTreeDepth": 6,
+  "maxResults": 300,
+  "enableScreenshots": false,
+  "semanticSelectors": {
+    "customer-name": {
+      "automationId": "CustomerNameTextBox",
+      "controlType": "Edit"
+    },
+    "save-customer": {
+      "automationId": "SaveButton",
+      "controlType": "Button"
+    },
+    "customer-enabled": {
+      "automationId": "EnabledCheckBox",
+      "controlType": "CheckBox"
+    },
+    "customer-role": {
+      "automationId": "RoleComboBox",
+      "controlType": "ComboBox"
+    },
+    "navigation-tree": {
+      "automationId": "NavigationTreeView",
+      "controlType": "Tree"
+    },
+    "customer-grid": {
+      "automationId": "CustomerDataGrid"
+    },
+    "validation-status": {
+      "automationId": "ValidationStatusLabel",
+      "controlType": "Text"
+    },
+    "delayed-action": {
+      "automationId": "DelayedActionButton",
+      "controlType": "Button"
+    },
+    "delayed-status": {
+      "automationId": "DelayedStatusLabel",
+      "controlType": "Text"
+    }
+  },
+  "sensitiveAutomationIds": []
+}
