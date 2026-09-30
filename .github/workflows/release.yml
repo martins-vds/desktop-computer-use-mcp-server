@@ -15,8 +15,33 @@ permissions:
   contents: write
 
 jobs:
+  prepare:
+    name: Resolve semantic version
+    runs-on: ubuntu-latest
+    outputs:
+      release_tag: ${{ steps.version.outputs.release_tag }}
+      version: ${{ steps.version.outputs.version }}
+      assembly_version: ${{ steps.version.outputs.assembly_version }}
+    steps:
+      - name: Validate and resolve release version
+        id: version
+        shell: bash
+        env:
+          CANDIDATE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+        run: |
+          if [[ ! "$CANDIDATE_TAG" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            echo "Release tags must use strict semantic version format vX.X.X; received '$CANDIDATE_TAG'." >&2
+            exit 1
+          fi
+
+          version="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.${BASH_REMATCH[3]}"
+          echo "release_tag=$CANDIDATE_TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "assembly_version=$version.0" >> "$GITHUB_OUTPUT"
+
   test:
     name: Test
+    needs: prepare
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -38,25 +63,31 @@ jobs:
 
   publish:
     name: Publish ${{ matrix.asset }}
-    needs: test
+    needs:
+      - prepare
+      - test
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
             rid: linux-x64
+            tfm: net8.0
             project: src/DesktopComputerUse.Server.Linux/DesktopComputerUse.Server.Linux.csproj
             asset: desktop-computer-use-linux-x64
           - os: ubuntu-latest
             rid: linux-arm64
+            tfm: net8.0
             project: src/DesktopComputerUse.Server.Linux/DesktopComputerUse.Server.Linux.csproj
             asset: desktop-computer-use-linux-arm64
           - os: windows-latest
             rid: win-x64
+            tfm: net8.0-windows
             project: src/DesktopComputerUse.Server/DesktopComputerUse.Server.csproj
             asset: desktop-computer-use-windows-x64
           - os: windows-latest
             rid: win-arm64
+            tfm: net8.0-windows
             project: src/DesktopComputerUse.Server/DesktopComputerUse.Server.csproj
             asset: desktop-computer-use-windows-arm64
     runs-on: ${{ matrix.os }}
@@ -86,14 +117,61 @@ jobs:
           -p:IncludeNativeLibrariesForSelfExtract=true
           -p:DebugType=None
           -p:DebugSymbols=false
+          -p:Version="${{ needs.prepare.outputs.version }}"
+          -p:PackageVersion="${{ needs.prepare.outputs.version }}"
+          -p:AssemblyVersion="${{ needs.prepare.outputs.assembly_version }}"
+          -p:FileVersion="${{ needs.prepare.outputs.assembly_version }}"
+          -p:InformationalVersion="${{ needs.prepare.outputs.version }}"
+          -p:IncludeSourceRevisionInInformationalVersion=false
+          -p:RepositoryCommit="$GITHUB_SHA"
+          -p:ContinuousIntegrationBuild=true
+
+      - name: Verify published assembly version
+        shell: pwsh
+        env:
+          EXPECTED_VERSION: ${{ needs.prepare.outputs.version }}
+          EXPECTED_ASSEMBLY_VERSION: ${{ needs.prepare.outputs.assembly_version }}
+        run: |
+          $projectDirectory = Split-Path "${{ matrix.project }}"
+          $assembly = Join-Path $projectDirectory `
+            "bin/Release/${{ matrix.tfm }}/${{ matrix.rid }}/desktop-computer-use.dll"
+          $versionInfo = [System.Diagnostics.FileVersionInfo]::GetVersionInfo(
+            (Resolve-Path $assembly)
+          )
+          $assemblyName = [System.Reflection.AssemblyName]::GetAssemblyName(
+            (Resolve-Path $assembly)
+          )
+          if ($assemblyName.Version.ToString() -ne $env:EXPECTED_ASSEMBLY_VERSION) {
+            throw "Expected AssemblyVersion $env:EXPECTED_ASSEMBLY_VERSION, got $($assemblyName.Version)."
+          }
+          if ($versionInfo.FileVersion -ne $env:EXPECTED_ASSEMBLY_VERSION) {
+            throw "Expected FileVersion $env:EXPECTED_ASSEMBLY_VERSION, got $($versionInfo.FileVersion)."
+          }
+          if ($versionInfo.ProductVersion -ne $env:EXPECTED_VERSION) {
+            throw "Expected ProductVersion $env:EXPECTED_VERSION, got $($versionInfo.ProductVersion)."
+          }
 
       - name: Stage release files
         shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+          ASSEMBLY_VERSION: ${{ needs.prepare.outputs.assembly_version }}
         run: |
           mkdir -p package/profiles
           cp README.md package/
           cp profiles/example.application.json package/profiles/
           cp publish/appsettings.json package/
+          printf '%s\n' "$RELEASE_VERSION" > package/VERSION
+          cat > package/release-manifest.json <<EOF
+          {
+            "tag": "$RELEASE_TAG",
+            "version": "$RELEASE_VERSION",
+            "assemblyVersion": "$ASSEMBLY_VERSION",
+            "runtimeIdentifier": "${{ matrix.rid }}",
+            "commit": "$GITHUB_SHA"
+          }
+          EOF
           if [[ "${{ runner.os }}" == "Windows" ]]; then
             cp publish/desktop-computer-use.exe package/
           else
@@ -104,28 +182,34 @@ jobs:
       - name: Create Linux archive
         if: runner.os == 'Linux'
         shell: bash
-        run: tar -C package -czf "${{ matrix.asset }}.tar.gz" .
+        run: >-
+          tar -C package -czf
+          "${{ matrix.asset }}-v${{ needs.prepare.outputs.version }}.tar.gz" .
 
       - name: Create Windows archive
         if: runner.os == 'Windows'
         shell: pwsh
-        run: Compress-Archive -Path package\* -DestinationPath "${{ matrix.asset }}.zip"
+        run: >-
+          Compress-Archive -Path package\*
+          -DestinationPath "${{ matrix.asset }}-v${{ needs.prepare.outputs.version }}.zip"
 
       - name: Upload packaged executable
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.asset }}
-          path: ${{ matrix.asset }}.*
+          name: ${{ matrix.asset }}-v${{ needs.prepare.outputs.version }}
+          path: ${{ matrix.asset }}-v${{ needs.prepare.outputs.version }}.*
           if-no-files-found: error
           retention-days: 7
 
   release:
     name: Publish GitHub release
-    needs: publish
+    needs:
+      - prepare
+      - publish
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
-      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+      RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v4

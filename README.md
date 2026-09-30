@@ -71,7 +71,11 @@ dotnet publish src/DesktopComputerUse.Server/DesktopComputerUse.Server.csproj `
   --runtime win-x64 `
   --self-contained true `
   -p:PublishSingleFile=true `
-  -p:IncludeNativeLibrariesForSelfExtract=true
+  -p:IncludeNativeLibrariesForSelfExtract=true `
+  -p:Version=1.2.3 `
+  -p:AssemblyVersion=1.2.3.0 `
+  -p:FileVersion=1.2.3.0 `
+  -p:InformationalVersion=1.2.3
 ```
 
 ```bash
@@ -80,7 +84,11 @@ dotnet publish src/DesktopComputerUse.Server.Linux/DesktopComputerUse.Server.Lin
   --runtime linux-x64 \
   --self-contained true \
   -p:PublishSingleFile=true \
-  -p:IncludeNativeLibrariesForSelfExtract=true
+  -p:IncludeNativeLibrariesForSelfExtract=true \
+  -p:Version=1.2.3 \
+  -p:AssemblyVersion=1.2.3.0 \
+  -p:FileVersion=1.2.3.0 \
+  -p:InformationalVersion=1.2.3
 ```
 
 Run portable tests:
@@ -421,7 +429,7 @@ profiles/
 
 ## GitHub releases
 
-The [`release.yml`](.github/workflows/release.yml) workflow runs when a tag matching `v*` is pushed, or through manual workflow dispatch with a release tag.
+The [`release.yml`](.github/workflows/release.yml) workflow runs when a strict semantic-version tag matching `vX.X.X` is pushed, or through manual workflow dispatch with a `vX.X.X` release tag. Other tag formats fail before build or publication.
 
 For example:
 
@@ -430,15 +438,26 @@ git tag v1.0.0
 git push origin v1.0.0
 ```
 
-The workflow builds and attaches:
+The tag is the single version source. For tag `v1.2.3`, the workflow publishes with:
 
-- `desktop-computer-use-windows-x64.zip`
-- `desktop-computer-use-windows-arm64.zip`
-- `desktop-computer-use-linux-x64.tar.gz`
-- `desktop-computer-use-linux-arm64.tar.gz`
+- NuGet/product version and informational version `1.2.3`
+- Assembly and file version `1.2.3.0`
+
+The workflow verifies the executable metadata and attaches:
+
+- `desktop-computer-use-windows-x64-v1.2.3.zip`
+- `desktop-computer-use-windows-arm64-v1.2.3.zip`
+- `desktop-computer-use-linux-x64-v1.2.3.tar.gz`
+- `desktop-computer-use-linux-arm64-v1.2.3.tar.gz`
 - `SHA256SUMS.txt`
 
-Manual dispatch can create a release tag at the selected commit when the tag does not already exist.
+Each platform archive contains:
+
+- `VERSION`, containing `1.2.3`
+- `release-manifest.json`, containing the tag, semantic version, assembly version, runtime identifier, and Git commit
+- The self-contained executable, README, application settings, and example profile
+
+Manual dispatch can create the validated release tag at the selected commit when the tag does not already exist.
 
 ## Licenses
 
