@@ -1,9 +1,13 @@
 using DesktopComputerUse.Automation.Applications;
+using DesktopComputerUse.Automation.Discovery;
 using DesktopComputerUse.Automation.FlaUi;
+using DesktopComputerUse.Automation.Resolution;
 using DesktopComputerUse.Automation.Selectors;
 using DesktopComputerUse.Automation.Threading;
 using DesktopComputerUse.Contracts.Automation;
 using DesktopComputerUse.Contracts.Configuration;
+using DesktopComputerUse.Contracts.Profiles;
+using DesktopComputerUse.Contracts.Resolution;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace DesktopComputerUse.Automation.Tests;
@@ -30,20 +34,46 @@ public sealed class WindowsAutomationIntegrationTests
             MainWindow = new WindowSelector { Title = "Desktop Computer Use Test App" },
             OperationTimeoutMs = 10_000,
             PollIntervalMs = 50,
+            EnableScreenshots = true,
+            SensitiveAutomationIds = new HashSet<string>(
+                ["CustomerPasswordTextBox"],
+                StringComparer.OrdinalIgnoreCase),
             SemanticSelectors = new Dictionary<string, ControlSelector>(
                 StringComparer.OrdinalIgnoreCase)
             {
                 ["customer-name"] = new() { AutomationId = "CustomerNameTextBox" },
                 ["save"] = new() { AutomationId = "SaveButton" }
+            },
+            SchemaVersion = 2,
+            SemanticTargets = new Dictionary<string, SemanticTargetDefinition>(
+                StringComparer.OrdinalIgnoreCase)
+            {
+                ["save"] = new()
+                {
+                    Intent = "save",
+                    ExpectedControlTypes = ["Button"],
+                    RequiredPatterns = ["Invoke"],
+                    Strategies =
+                    [
+                        new SelectorStrategy
+                        {
+                            AutomationId = "SaveButton",
+                            ControlType = "Button"
+                        }
+                    ]
+                }
             }
         };
 
+        var observer = new ControlObserver();
         await using var controller = new DesktopAutomationController(
             new ApplicationProfileStore([profile]),
             new MtaAutomationWorker(),
             new FlaUiAutomationFactory(),
             new ControlSelectorResolver(),
-            new ControlObserver(),
+            observer,
+            new ApplicationSnapshotBuilder(observer),
+            new FuzzyControlResolver(),
             NullLogger<DesktopAutomationController>.Instance);
 
         var launched = false;
@@ -57,6 +87,49 @@ public sealed class WindowsAutomationIntegrationTests
                 new ControlSelector { SemanticKey = "customer-name" },
                 CancellationToken.None);
             Assert.True(field.Succeeded, field.Error?.Message);
+
+            var snapshot = await controller.SnapshotApplicationAsync(
+                maxDepth: 5,
+                maxResults: 200,
+                CancellationToken.None);
+            Assert.True(snapshot.Succeeded, snapshot.Error?.Message);
+            Assert.NotNull(snapshot.Value);
+            Assert.Contains(
+                snapshot.Value.Window.Controls,
+                control => control.AutomationId == "SaveButton");
+            var password = Assert.Single(
+                snapshot.Value.Window.Controls,
+                control => control.AutomationId == "CustomerPasswordTextBox");
+            Assert.True(password.IsPassword);
+            Assert.True(password.IsValueRedacted);
+            Assert.Null(password.Value);
+
+            var fieldCapture = await controller.CaptureControlImageAsync(
+                new ControlSelector { SemanticKey = "customer-name" },
+                CancellationToken.None);
+            Assert.True(fieldCapture.Succeeded, fieldCapture.Error?.Message);
+            Assert.NotEmpty(fieldCapture.Value!.Base64Data);
+
+            var passwordCapture = await controller.CaptureControlImageAsync(
+                new ControlSelector { AutomationId = "CustomerPasswordTextBox" },
+                CancellationToken.None);
+            Assert.False(passwordCapture.Succeeded);
+            Assert.Equal(
+                AutomationErrorCode.ApplicationNotAllowed,
+                passwordCapture.Error?.Code);
+
+            var resolution = await controller.ResolveControlIntentAsync(
+                "save",
+                maximumCandidates: 10,
+                CancellationToken.None);
+            Assert.True(resolution.Succeeded, resolution.Error?.Message);
+            Assert.Equal(ResolutionStatus.Resolved, resolution.Value?.Status);
+            Assert.Equal(
+                "SaveButton",
+                resolution.Value?.Candidates
+                    .Single(candidate =>
+                        candidate.CandidateId == resolution.Value.SelectedCandidateId)
+                    .Candidate.AutomationId);
 
             var set = await controller.SetValueAsync(
                 new ControlSelector { SemanticKey = "customer-name" },

@@ -50,9 +50,13 @@ public sealed class PortableProfileStore
         var profile = JsonSerializer.Deserialize<ApplicationProfile>(stream, SerializerOptions)
             ?? throw new ProfileValidationException($"Profile file '{path}' is empty.");
 
-        if (string.IsNullOrWhiteSpace(profile.Id) ||
-            string.IsNullOrWhiteSpace(profile.DisplayName) ||
-            string.IsNullOrWhiteSpace(profile.ExecutablePath))
+        var requiredValues = new[]
+        {
+            profile.Id,
+            profile.DisplayName,
+            profile.ExecutablePath
+        };
+        if (requiredValues.Any(string.IsNullOrWhiteSpace))
         {
             throw new ProfileValidationException(
                 $"Profile file '{path}' must define id, displayName, and executablePath.");

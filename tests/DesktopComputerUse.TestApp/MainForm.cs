@@ -6,6 +6,8 @@ internal sealed class MainForm : Form
     private const string DelayedReadyStatus = "Delayed action ready";
 
     private readonly TextBox _customerNameTextBox = new();
+    private readonly TextBox _profileSearchTextBox = new();
+    private readonly TextBox _passwordTextBox = new();
     private readonly Button _saveButton = new();
     private readonly CheckBox _enabledCheckBox = new();
     private readonly ComboBox _roleComboBox = new();
@@ -17,10 +19,12 @@ internal sealed class MainForm : Form
     private readonly Button _toggleDetailsButton = new();
     private readonly Panel _expandableContentPanel = new();
     private readonly Button _modalDialogButton = new();
+    private readonly Button _profileDialogButton = new();
     private readonly Label _validationStatusLabel = new();
     private readonly Button _disabledActionButton = new();
     private readonly Button _delayedActionButton = new();
     private readonly Label _delayedStatusLabel = new();
+    private readonly Label _viewStatusLabel = new();
     private readonly System.Windows.Forms.Timer _delayedTimer = new() { Interval = 600 };
 
     public MainForm()
@@ -69,6 +73,19 @@ internal sealed class MainForm : Form
         _customerNameTextBox.AccessibleDescription = "Enter the customer name to validate and save.";
         _customerNameTextBox.Width = 260;
 
+        _profileSearchTextBox.Name = "ProfileSearchTextBox";
+        _profileSearchTextBox.AccessibleName = "Customer profile search";
+        _profileSearchTextBox.AccessibleDescription =
+            "Search customer profiles by name; this nearby edit field is intentionally similar to the customer name field.";
+        _profileSearchTextBox.Width = 260;
+
+        _passwordTextBox.Name = "CustomerPasswordTextBox";
+        _passwordTextBox.AccessibleName = "Customer password";
+        _passwordTextBox.AccessibleDescription =
+            "Enter the customer password; the value is masked for accessibility and automation state discovery.";
+        _passwordTextBox.UseSystemPasswordChar = true;
+        _passwordTextBox.Width = 220;
+
         _saveButton.Name = "SaveButton";
         _saveButton.AccessibleName = "Save customer";
         _saveButton.AccessibleDescription = "Validates and saves the current customer name.";
@@ -103,6 +120,13 @@ internal sealed class MainForm : Form
         _modalDialogButton.Text = "Open dialog";
         _modalDialogButton.AutoSize = true;
 
+        _profileDialogButton.Name = "ProfileDialogButton";
+        _profileDialogButton.AccessibleName = "Open profile discovery dialog";
+        _profileDialogButton.AccessibleDescription =
+            "Opens a record-scoped dialog containing another Save button and a record-specific window title.";
+        _profileDialogButton.Text = "Open profile";
+        _profileDialogButton.AutoSize = true;
+
         _validationStatusLabel.Name = "ValidationStatusLabel";
         _validationStatusLabel.AccessibleName = "Validation status";
         _validationStatusLabel.AccessibleDescription = "Reports the result of customer validation and save actions.";
@@ -125,6 +149,12 @@ internal sealed class MainForm : Form
         _delayedStatusLabel.AccessibleName = "Delayed action status";
         _delayedStatusLabel.AccessibleDescription = "Reports the deterministic delayed action state.";
         _delayedStatusLabel.AutoSize = true;
+
+        _viewStatusLabel.Name = "ViewStatusLabel";
+        _viewStatusLabel.AccessibleName = "Current view signature";
+        _viewStatusLabel.AccessibleDescription =
+            "Reports the selected tab and profile search query as a deterministic dynamic view signature.";
+        _viewStatusLabel.AutoSize = true;
     }
 
     private void ConfigureTree()
@@ -240,7 +270,7 @@ internal sealed class MainForm : Form
             RowCount = 2,
             ColumnCount = 1
         };
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 155));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 215));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         layout.Controls.Add(CreateCustomerPanel(), 0, 0);
         layout.Controls.Add(CreateContentPanel(), 0, 1);
@@ -262,7 +292,7 @@ internal sealed class MainForm : Form
         {
             Dock = DockStyle.Fill,
             Padding = new Padding(8),
-            RowCount = 3,
+            RowCount = 4,
             ColumnCount = 4
         };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
@@ -272,11 +302,17 @@ internal sealed class MainForm : Form
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
         layout.Controls.Add(CreateLabel("CustomerNameLabel", "Customer name:", _customerNameTextBox), 0, 0);
         layout.Controls.Add(_customerNameTextBox, 1, 0);
         layout.Controls.Add(CreateLabel("RoleLabel", "Role:", _roleComboBox), 2, 0);
         layout.Controls.Add(_roleComboBox, 3, 0);
+
+        layout.Controls.Add(CreateLabel("ProfileSearchLabel", "Customer search:", _profileSearchTextBox), 0, 1);
+        layout.Controls.Add(_profileSearchTextBox, 1, 1);
+        layout.Controls.Add(CreateLabel("CustomerPasswordLabel", "Password:", _passwordTextBox), 2, 1);
+        layout.Controls.Add(_passwordTextBox, 3, 1);
 
         var actions = new FlowLayoutPanel
         {
@@ -291,10 +327,11 @@ internal sealed class MainForm : Form
             _enabledCheckBox,
             _saveButton,
             _modalDialogButton,
+            _profileDialogButton,
             _disabledActionButton,
             _delayedActionButton
         ]);
-        layout.Controls.Add(actions, 0, 1);
+        layout.Controls.Add(actions, 0, 2);
         layout.SetColumnSpan(actions, 4);
 
         var statuses = new TableLayoutPanel
@@ -302,14 +339,16 @@ internal sealed class MainForm : Form
             Name = "StatusPanel",
             AutoSize = true,
             Dock = DockStyle.Fill,
-            ColumnCount = 2,
+            ColumnCount = 3,
             RowCount = 1
         };
-        statuses.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-        statuses.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        statuses.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 34));
+        statuses.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33));
+        statuses.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33));
         statuses.Controls.Add(_validationStatusLabel, 0, 0);
         statuses.Controls.Add(_delayedStatusLabel, 1, 0);
-        layout.Controls.Add(statuses, 0, 2);
+        statuses.Controls.Add(_viewStatusLabel, 2, 0);
+        layout.Controls.Add(statuses, 0, 3);
         layout.SetColumnSpan(statuses, 4);
 
         group.Controls.Add(layout);
@@ -420,8 +459,11 @@ internal sealed class MainForm : Form
         _resetMenuItem.Click += (_, _) => ResetFixture();
         _toggleDetailsButton.Click += (_, _) => SetDetailsExpanded(!_expandableContentPanel.Visible);
         _modalDialogButton.Click += (_, _) => ShowModalDialog();
+        _profileDialogButton.Click += (_, _) => ShowProfileDiscoveryDialog();
         _delayedActionButton.Click += (_, _) => StartDelayedAction();
         _delayedTimer.Tick += (_, _) => CompleteDelayedAction();
+        _mainTabControl.SelectedIndexChanged += (_, _) => UpdateViewStatus();
+        _profileSearchTextBox.TextChanged += (_, _) => UpdateViewStatus();
     }
 
     private void SaveCustomer()
@@ -437,6 +479,16 @@ internal sealed class MainForm : Form
         using var dialog = new FixtureDialog();
         dialog.ShowDialog(this);
         _validationStatusLabel.Text = "Modal dialog closed.";
+    }
+
+    private void ShowProfileDiscoveryDialog()
+    {
+        var recordId = _customerDataGrid.SelectedRows.Count > 0
+            ? Convert.ToString(_customerDataGrid.SelectedRows[0].Cells["CustomerIdColumn"].Value) ?? "1001"
+            : "1001";
+        using var dialog = new ProfileDiscoveryDialog(recordId);
+        dialog.ShowDialog(this);
+        _validationStatusLabel.Text = $"Profile dialog closed for record {recordId}.";
     }
 
     private void StartDelayedAction()
@@ -465,10 +517,21 @@ internal sealed class MainForm : Form
             : "Expand customer details";
     }
 
+    private void UpdateViewStatus()
+    {
+        var viewName = _mainTabControl.SelectedTab?.Text ?? "None";
+        var searchQuery = string.IsNullOrWhiteSpace(_profileSearchTextBox.Text)
+            ? "none"
+            : _profileSearchTextBox.Text.Trim();
+        _viewStatusLabel.Text = $"View: {viewName}; Search: {searchQuery}";
+    }
+
     private void ResetFixture()
     {
         _delayedTimer.Stop();
         _customerNameTextBox.Clear();
+        _profileSearchTextBox.Clear();
+        _passwordTextBox.Clear();
         _enabledCheckBox.Checked = true;
         _roleComboBox.SelectedIndex = 1;
         _validationStatusLabel.Text = ReadyStatus;
@@ -480,6 +543,7 @@ internal sealed class MainForm : Form
         _navigationTreeView.SelectedNode = null;
         _customerDataGrid.ClearSelection();
         SetDetailsExpanded(true);
+        UpdateViewStatus();
     }
 }
 
@@ -524,5 +588,86 @@ internal sealed class FixtureDialog : Form
         CancelButton = okButton;
         Controls.Add(message);
         Controls.Add(okButton);
+    }
+}
+
+internal sealed class ProfileDiscoveryDialog : Form
+{
+    public ProfileDiscoveryDialog(string recordId)
+    {
+        Name = "ProfileDiscoveryDialog";
+        AccessibleName = "Customer profile discovery dialog";
+        AccessibleDescription =
+            $"A record-scoped profile dialog for customer {recordId} with intentionally duplicated action text.";
+        Text = $"Profile Discovery - Record {recordId}";
+        AutoScaleMode = AutoScaleMode.None;
+        ClientSize = new Size(440, 225);
+        FormBorderStyle = FormBorderStyle.FixedDialog;
+        MaximizeBox = false;
+        MinimizeBox = false;
+        ShowInTaskbar = false;
+        StartPosition = FormStartPosition.CenterParent;
+
+        var recordLabel = new Label
+        {
+            Name = "ProfileRecordLabel",
+            AccessibleName = "Profile record identifier",
+            AccessibleDescription = "Identifies the customer record represented by this profile view.",
+            Text = $"Record ID: {recordId}",
+            AutoSize = true,
+            Location = new Point(20, 22)
+        };
+
+        var actionGroup = new GroupBox
+        {
+            Name = "ProfileDialogActionGroup",
+            AccessibleName = "Profile dialog actions",
+            AccessibleDescription =
+                "A separate scoped container whose Save action is distinct from the main customer Save button.",
+            Text = "Profile actions",
+            Location = new Point(20, 55),
+            Size = new Size(400, 105)
+        };
+
+        var saveStatus = new Label
+        {
+            Name = "ProfileDialogSaveStatusLabel",
+            AccessibleName = "Profile save status",
+            AccessibleDescription = "Reports the result of the scoped profile Save action.",
+            Text = "Profile changes pending",
+            AutoSize = true,
+            Location = new Point(18, 29)
+        };
+
+        var scopedSaveButton = new Button
+        {
+            Name = "ProfileDialogSaveButton",
+            AccessibleName = "Save profile",
+            AccessibleDescription =
+                "Saves only the record-scoped profile dialog and does not invoke the main SaveButton behavior.",
+            Text = "Save",
+            AutoSize = true,
+            Location = new Point(18, 59)
+        };
+        scopedSaveButton.Click += (_, _) => saveStatus.Text = $"Saved profile for record {recordId}.";
+
+        var closeButton = new Button
+        {
+            Name = "ProfileDialogCloseButton",
+            AccessibleName = "Close profile dialog",
+            AccessibleDescription = "Closes the record-scoped profile discovery dialog.",
+            Text = "Close",
+            DialogResult = DialogResult.OK,
+            Size = new Size(90, 30),
+            Location = new Point(330, 178)
+        };
+
+        actionGroup.Controls.Add(saveStatus);
+        actionGroup.Controls.Add(scopedSaveButton);
+        AcceptButton = closeButton;
+        CancelButton = closeButton;
+        Controls.Add(recordLabel);
+        Controls.Add(actionGroup);
+        Controls.Add(closeButton);
     }
 }

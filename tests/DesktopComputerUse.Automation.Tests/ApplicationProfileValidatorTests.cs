@@ -1,6 +1,7 @@
 using DesktopComputerUse.Automation.Applications;
 using DesktopComputerUse.Contracts.Automation;
 using DesktopComputerUse.Contracts.Configuration;
+using DesktopComputerUse.Contracts.Profiles;
 
 namespace DesktopComputerUse.Automation.Tests;
 
@@ -97,4 +98,132 @@ public sealed class ApplicationProfileValidatorTests
 
         Assert.Contains("negative index", exception.Message, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public void Validate_accepts_a_complete_schema_v2_semantic_target()
+    {
+        var profile = TestProfile.Create() with
+        {
+            SchemaVersion = 2,
+            SemanticTargets = new Dictionary<string, SemanticTargetDefinition>
+            {
+                ["customer-name"] = ValidTarget()
+            }
+        };
+
+        ApplicationProfileValidator.Validate(profile);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(3)]
+    public void Validate_rejects_unsupported_schema_versions(int schemaVersion)
+    {
+        var exception = Assert.Throws<ProfileValidationException>(
+            () => ApplicationProfileValidator.Validate(
+                TestProfile.Create() with { SchemaVersion = schemaVersion }));
+
+        Assert.Contains("unsupported schema version", exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_rejects_invalid_schema_v2_target_shapes()
+    {
+        var invalidTargets = new (SemanticTargetDefinition Target, string Message)[]
+        {
+            (ValidTarget() with { Intent = "" }, "without a key or intent"),
+            (ValidTarget() with { Strategies = [] }, "at least one selector strategy"),
+            (
+                ValidTarget() with
+                {
+                    Thresholds = new ResolutionThresholds { MinimumConfidence = -0.01 }
+                },
+                "invalid resolution thresholds"),
+            (
+                ValidTarget() with
+                {
+                    Thresholds = new ResolutionThresholds { MinimumMargin = 1.01 }
+                },
+                "invalid resolution thresholds"),
+            (
+                ValidTarget() with { Strategies = [new SelectorStrategy()] },
+                "empty selector strategy"),
+            (
+                ValidTarget() with
+                {
+                    Strategies = [new SelectorStrategy { SemanticKey = "other" }]
+                },
+                "cannot reference another semantic key"),
+            (
+                ValidTarget() with
+                {
+                    Strategies =
+                    [
+                        new SelectorStrategy { AutomationId = "Field", Weight = 1.01 }
+                    ]
+                },
+                "weight outside"),
+            (
+                ValidTarget() with
+                {
+                    Strategies =
+                    [
+                        new SelectorStrategy { AutomationId = "Field", Index = -1 }
+                    ]
+                },
+                "negative strategy index"),
+            (
+                ValidTarget() with { ExpectedControlTypes = ["DefinitelyNotAControl"] },
+                "unknown control type")
+        };
+
+        foreach (var (target, expectedMessage) in invalidTargets)
+        {
+            var profile = TestProfile.Create() with
+            {
+                SchemaVersion = 2,
+                SemanticTargets = new Dictionary<string, SemanticTargetDefinition>
+                {
+                    ["customer-name"] = target
+                }
+            };
+
+            var exception = Assert.Throws<ProfileValidationException>(
+                () => ApplicationProfileValidator.Validate(profile));
+            Assert.Contains(expectedMessage, exception.Message, StringComparison.OrdinalIgnoreCase);
+        }
+    }
+
+    private static SemanticTargetDefinition ValidTarget()
+        => new()
+        {
+            Intent = "customer name",
+            Synonyms = ["account holder"],
+            ExpectedControlTypes = ["Edit"],
+            RequiredPatterns = ["Value"],
+            Scope = new SelectorScope
+            {
+                ViewKey = "view-main",
+                AncestorLabels = ["Customer details"]
+            },
+            Strategies =
+            [
+                new SelectorStrategy
+                {
+                    AutomationId = "CustomerNameTextBox",
+                    ControlType = "Edit",
+                    Weight = 0.9
+                }
+            ],
+            Thresholds = new ResolutionThresholds
+            {
+                MinimumConfidence = 0.8,
+                MinimumMargin = 0.1
+            },
+            Fingerprint = new ControlFingerprint
+            {
+                ControlType = "Edit",
+                NameTokens = ["customer", "name"]
+            }
+        };
 }

@@ -1,9 +1,13 @@
 using DesktopComputerUse.Contracts.Automation;
+using DesktopComputerUse.Contracts.Profiles;
+using System.Text.Json.Serialization;
 
 namespace DesktopComputerUse.Contracts.Configuration;
 
 public sealed record ApplicationProfile
 {
+    public int SchemaVersion { get; init; } = 1;
+
     public required string Id { get; init; }
 
     public required string DisplayName { get; init; }
@@ -31,6 +35,27 @@ public sealed record ApplicationProfile
     public IReadOnlyDictionary<string, ControlSelector> SemanticSelectors { get; init; }
         = new Dictionary<string, ControlSelector>(StringComparer.OrdinalIgnoreCase);
 
+    public IReadOnlyDictionary<string, SemanticTargetDefinition> SemanticTargets { get; init; }
+        = new Dictionary<string, SemanticTargetDefinition>(StringComparer.OrdinalIgnoreCase);
+
     public HashSet<string> SensitiveAutomationIds { get; init; }
         = new(StringComparer.OrdinalIgnoreCase);
+
+    [JsonIgnore]
+    public IReadOnlyDictionary<string, SemanticTargetDefinition> EffectiveSemanticTargets
+    {
+        get
+        {
+            var targets = SemanticSelectors.ToDictionary(
+                pair => pair.Key,
+                pair => SemanticTargetDefinition.FromLegacy(pair.Key, pair.Value),
+                StringComparer.OrdinalIgnoreCase);
+            foreach (var (key, target) in SemanticTargets)
+            {
+                targets[key] = target;
+            }
+
+            return targets;
+        }
+    }
 }

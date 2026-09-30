@@ -1,0 +1,21 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\DesktopComputerUse.Contracts\DesktopComputerUse.Contracts.csproj" />
+    <ProjectReference Include="..\DesktopComputerUse.Automation\DesktopComputerUse.Automation.csproj" />
+    <ProjectReference Include="..\DesktopComputerUse.ProfileIntelligence\DesktopComputerUse.ProfileIntelligence.csproj" />
+    <ProjectReference Include="..\DesktopComputerUse.ProfileIntelligence.Copilot\DesktopComputerUse.ProfileIntelligence.Copilot.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="System.Text.Json" Version="10.0.2" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+</Project>

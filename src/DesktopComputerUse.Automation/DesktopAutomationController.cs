@@ -1,12 +1,18 @@
 using System.Diagnostics;
+using System.Drawing;
 using System.Drawing.Imaging;
 using System.Text.RegularExpressions;
 using DesktopComputerUse.Automation.Applications;
+using DesktopComputerUse.Automation.Discovery;
 using DesktopComputerUse.Automation.FlaUi;
+using DesktopComputerUse.Automation.Resolution;
 using DesktopComputerUse.Automation.Selectors;
 using DesktopComputerUse.Automation.Threading;
 using DesktopComputerUse.Contracts.Automation;
 using DesktopComputerUse.Contracts.Configuration;
+using DesktopComputerUse.Contracts.Discovery;
+using DesktopComputerUse.Contracts.Resolution;
+using DesktopComputerUse.Contracts.Profiles;
 using FlaUI.Core.AutomationElements;
 using FlaUI.Core.Capturing;
 using FlaUI.Core.Definitions;
@@ -24,9 +30,13 @@ public sealed class DesktopAutomationController : IAsyncDisposable
     private readonly FlaUiAutomationFactory _automationFactory;
     private readonly ControlSelectorResolver _selectorResolver;
     private readonly ControlObserver _observer;
+    private readonly ApplicationSnapshotBuilder _snapshotBuilder;
+    private readonly FuzzyControlResolver _fuzzyResolver;
     private readonly ILogger<DesktopAutomationController> _logger;
 
     private AutomationSession? _session;
+    private readonly Dictionary<string, ProfileUpdateProposal> _profileUpdateProposals =
+        new(StringComparer.Ordinal);
 
     public DesktopAutomationController(
         IApplicationProfileStore profiles,
@@ -34,6 +44,8 @@ public sealed class DesktopAutomationController : IAsyncDisposable
         FlaUiAutomationFactory automationFactory,
         ControlSelectorResolver selectorResolver,
         ControlObserver observer,
+        ApplicationSnapshotBuilder snapshotBuilder,
+        FuzzyControlResolver fuzzyResolver,
         ILogger<DesktopAutomationController> logger)
     {
         _profiles = profiles;
@@ -41,6 +53,8 @@ public sealed class DesktopAutomationController : IAsyncDisposable
         _automationFactory = automationFactory;
         _selectorResolver = selectorResolver;
         _observer = observer;
+        _snapshotBuilder = snapshotBuilder;
+        _fuzzyResolver = fuzzyResolver;
         _logger = logger;
     }
 
@@ -78,34 +92,12 @@ public sealed class DesktopAutomationController : IAsyncDisposable
 
                 var application = FlaApplication.Launch(startInfo);
                 var automation = _automationFactory.Create(profile.Backend);
-
-                try
-                {
-                    var window = WaitForMainWindow(
-                        application,
-                        automation,
-                        profile,
-                        token);
-                    _session = new AutomationSession(
-                        profile,
-                        application,
-                        automation,
-                        window,
-                        ownsProcess: true);
-                    LogAudit("launch", profile.Id, application.ProcessId, succeeded: true);
-                    return BuildApplicationState(_session);
-                }
-                catch
-                {
-                    automation.Dispose();
-                    if (!application.HasExited)
-                    {
-                        application.Close(killIfCloseFails: false);
-                    }
-
-                    application.Dispose();
-                    throw;
-                }
+                return StartSession(
+                    profile,
+                    application,
+                    automation,
+                    ownsProcess: true,
+                    token);
             });
     }
 
@@ -132,29 +124,12 @@ public sealed class DesktopAutomationController : IAsyncDisposable
 
                 var application = FlaApplication.Attach(processId);
                 var automation = _automationFactory.Create(profile.Backend);
-
-                try
-                {
-                    var window = WaitForMainWindow(
-                        application,
-                        automation,
-                        profile,
-                        token);
-                    _session = new AutomationSession(
-                        profile,
-                        application,
-                        automation,
-                        window,
-                        ownsProcess: false);
-                    LogAudit("attach", profile.Id, processId, succeeded: true);
-                    return BuildApplicationState(_session);
-                }
-                catch
-                {
-                    automation.Dispose();
-                    application.Dispose();
-                    throw;
-                }
+                return StartSession(
+                    profile,
+                    application,
+                    automation,
+                    ownsProcess: false,
+                    token);
             });
     }
 
@@ -173,18 +148,77 @@ public sealed class DesktopAutomationController : IAsyncDisposable
                 var profileId = session.Profile.Id;
                 var processId = session.Application.ProcessId;
 
-                if (terminateOwnedProcess &&
-                    session.OwnsProcess &&
-                    !session.Application.HasExited)
-                {
-                    session.Application.Close(killIfCloseFails: false);
-                }
+                CloseOwnedProcess(session, terminateOwnedProcess);
 
                 session.Dispose();
                 _session = null;
+                _profileUpdateProposals.Clear();
                 LogAudit("detach", profileId, processId, succeeded: true);
                 return AutomationResult.Success();
             });
+    }
+
+    private ApplicationState StartSession(
+        ApplicationProfile profile,
+        FlaApplication application,
+        FlaUI.Core.AutomationBase automation,
+        bool ownsProcess,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var window = WaitForMainWindow(
+                application,
+                automation,
+                profile,
+                cancellationToken);
+            _session = new AutomationSession(
+                profile,
+                application,
+                automation,
+                window,
+                ownsProcess);
+            LogAudit(
+                ownsProcess ? "launch" : "attach",
+                profile.Id,
+                application.ProcessId,
+                succeeded: true);
+            return BuildApplicationState(_session);
+        }
+        catch
+        {
+            CleanupFailedSession(application, automation, ownsProcess);
+            throw;
+        }
+    }
+
+    private static void CleanupFailedSession(
+        FlaApplication application,
+        FlaUI.Core.AutomationBase automation,
+        bool ownsProcess)
+    {
+        automation.Dispose();
+        if (ownsProcess && !application.HasExited)
+        {
+            application.Close(killIfCloseFails: false);
+        }
+
+        application.Dispose();
+    }
+
+    private static void CloseOwnedProcess(
+        AutomationSession session,
+        bool terminateOwnedProcess)
+    {
+        if (new[]
+            {
+                terminateOwnedProcess,
+                session.OwnsProcess,
+                !session.Application.HasExited
+            }.All(value => value))
+        {
+            session.Application.Close(killIfCloseFails: false);
+        }
     }
 
     public Task<AutomationResult<ApplicationState>> GetApplicationStateAsync(
@@ -226,6 +260,91 @@ public sealed class DesktopAutomationController : IAsyncDisposable
                     session.Profile.MaxTreeDepth);
                 var remaining = session.Profile.MaxResults;
                 return BuildTree(root, session.Profile, depth, ref remaining, token);
+            });
+
+    public Task<AutomationResult<ApplicationSnapshot>> SnapshotApplicationAsync(
+        int? maxDepth,
+        int? maxResults,
+        CancellationToken cancellationToken)
+        => ExecuteWithSessionAsync(
+            cancellationToken,
+            (session, token) => _snapshotBuilder.Build(
+                session,
+                Math.Clamp(
+                    maxDepth ?? session.Profile.MaxTreeDepth,
+                    1,
+                    session.Profile.MaxTreeDepth),
+                Math.Clamp(
+                    maxResults ?? session.Profile.MaxResults,
+                    1,
+                    session.Profile.MaxResults),
+                token));
+
+    public Task<AutomationResult<ControlResolutionResult>> ResolveControlIntentAsync(
+        string semanticKey,
+        int maximumCandidates,
+        CancellationToken cancellationToken)
+        => ExecuteWithSessionAsync(
+            cancellationToken,
+            (session, token) =>
+            {
+                if (!session.Profile.EffectiveSemanticTargets.TryGetValue(
+                        semanticKey,
+                        out var target))
+                {
+                    throw new AutomationOperationException(
+                        AutomationErrorCode.ControlNotFound,
+                        $"Semantic target '{semanticKey}' is not defined by profile '{session.Profile.Id}'.");
+                }
+
+                var snapshot = _snapshotBuilder.Build(
+                    session,
+                    session.Profile.MaxTreeDepth,
+                    session.Profile.MaxResults,
+                    token);
+                var result = _fuzzyResolver.Resolve(
+                    snapshot,
+                    semanticKey,
+                    target,
+                    Math.Clamp(maximumCandidates, 1, 50));
+                RecordShadowProposal(session, target, result);
+                return result;
+            });
+
+    public Task<AutomationResult<IReadOnlyList<ProfileUpdateProposal>>> GetProfileUpdateProposalsAsync(
+        CancellationToken cancellationToken)
+        => ExecuteWithSessionAsync(
+            cancellationToken,
+            (session, token) =>
+            {
+                token.ThrowIfCancellationRequested();
+                return (IReadOnlyList<ProfileUpdateProposal>)_profileUpdateProposals.Values
+                    .Where(proposal => proposal.ProfileId == session.Profile.Id)
+                    .OrderByDescending(proposal => proposal.CreatedAt)
+                    .ToArray();
+            });
+
+    public Task<AutomationResult<ProfileUpdatePatch>> ExportProfileUpdatePatchAsync(
+        string proposalId,
+        CancellationToken cancellationToken)
+        => ExecuteWithSessionAsync(
+            cancellationToken,
+            (session, token) =>
+            {
+                token.ThrowIfCancellationRequested();
+                if (!_profileUpdateProposals.TryGetValue(proposalId, out var proposal) ||
+                    proposal.ProfileId != session.Profile.Id)
+                {
+                    throw new AutomationOperationException(
+                        AutomationErrorCode.ControlNotFound,
+                        $"Profile update proposal '{proposalId}' was not found.");
+                }
+
+                return new ProfileUpdatePatch(
+                    proposal.ProfileId,
+                    proposal.ProposalId,
+                    proposal.SemanticKey,
+                    proposal.ProposedTarget);
             });
 
     public Task<AutomationResult<ActionResult>> InvokeAsync(
@@ -292,25 +411,10 @@ public sealed class DesktopAutomationController : IAsyncDisposable
         bool expanded,
         CancellationToken cancellationToken)
         => ExecuteActionAsync(
-            expanded ? "expand" : "collapse",
+            ExpandedActionName(expanded),
             selector,
             cancellationToken,
-            element =>
-            {
-                if (!element.Patterns.ExpandCollapse.TryGetPattern(out var pattern))
-                {
-                    throw Unsupported("ExpandCollapse", element);
-                }
-
-                if (expanded)
-                {
-                    pattern.Expand();
-                }
-                else
-                {
-                    pattern.Collapse();
-                }
-            });
+            element => SetExpandedState(element, expanded));
 
     public Task<AutomationResult<ActionResult>> ScrollAsync(
         ControlSelector selector,
@@ -321,30 +425,60 @@ public sealed class DesktopAutomationController : IAsyncDisposable
             "scroll",
             selector,
             cancellationToken,
-            element =>
-            {
-                if (Math.Abs(horizontalSteps) > 20 || Math.Abs(verticalSteps) > 20)
-                {
-                    throw new AutomationOperationException(
-                        AutomationErrorCode.AutomationFailure,
-                        "Scroll steps must be between -20 and 20.");
-                }
+            element => ScrollElement(element, horizontalSteps, verticalSteps));
 
-                if (!element.Patterns.Scroll.TryGetPattern(out var pattern))
-                {
-                    throw Unsupported("Scroll", element);
-                }
+    private static string ExpandedActionName(bool expanded)
+        => expanded ? "expand" : "collapse";
 
-                var iterations = Math.Max(
-                    Math.Abs(horizontalSteps),
-                    Math.Abs(verticalSteps));
-                for (var index = 0; index < iterations; index++)
-                {
-                    pattern.Scroll(
-                        GetScrollAmount(horizontalSteps, index),
-                        GetScrollAmount(verticalSteps, index));
-                }
-            });
+    private static void SetExpandedState(
+        AutomationElement element,
+        bool expanded)
+    {
+        if (!element.Patterns.ExpandCollapse.TryGetPattern(out var pattern))
+        {
+            throw Unsupported("ExpandCollapse", element);
+        }
+
+        if (expanded)
+        {
+            pattern.Expand();
+            return;
+        }
+
+        pattern.Collapse();
+    }
+
+    private static void ScrollElement(
+        AutomationElement element,
+        int horizontalSteps,
+        int verticalSteps)
+    {
+        ValidateScrollSteps(horizontalSteps, verticalSteps);
+        if (!element.Patterns.Scroll.TryGetPattern(out var pattern))
+        {
+            throw Unsupported("Scroll", element);
+        }
+
+        var iterations = Math.Max(
+            Math.Abs(horizontalSteps),
+            Math.Abs(verticalSteps));
+        for (var index = 0; index < iterations; index++)
+        {
+            pattern.Scroll(
+                ScrollAmountResolver.Get(horizontalSteps, index),
+                ScrollAmountResolver.Get(verticalSteps, index));
+        }
+    }
+
+    private static void ValidateScrollSteps(int horizontalSteps, int verticalSteps)
+    {
+        if (Math.Abs(horizontalSteps) > 20 || Math.Abs(verticalSteps) > 20)
+        {
+            throw new AutomationOperationException(
+                AutomationErrorCode.AutomationFailure,
+                "Scroll steps must be between -20 and 20.");
+        }
+    }
 
     public Task<AutomationResult<ControlSummary>> WaitForStateAsync(
         ControlSelector selector,
@@ -361,54 +495,46 @@ public sealed class DesktopAutomationController : IAsyncDisposable
         return ExecuteAsync(
             requestedTimeout + TimeSpan.FromSeconds(1),
             cancellationToken,
-            token =>
-            {
-                var session = GetSession();
-                var expanded = _selectorResolver.ExpandSemanticSelector(
-                    session.Profile,
-                    selector);
-                var deadline = DateTime.UtcNow + requestedTimeout;
-
-                while (DateTime.UtcNow <= deadline)
-                {
-                    token.ThrowIfCancellationRequested();
-                    var matches = _selectorResolver.FindMatches(
-                        session.MainWindow,
-                        expanded,
-                        session.Profile.MaxResults,
-                        session.Profile.MaxTreeDepth);
-
-                    if (matches.Count > 1)
-                    {
-                        throw Ambiguous(session, matches);
-                    }
-
-                    var element = matches.SingleOrDefault();
-                    if (MatchesCondition(element, session.Profile, condition))
-                    {
-                        return element is null
-                            ? new ControlSummary(
-                                null,
-                                null,
-                                "Missing",
-                                null,
-                                false,
-                                true,
-                                new RectangleInfo(0, 0, 0, 0),
-                                null,
-                                false,
-                                [])
-                            : _observer.Observe(element, session.Profile);
-                    }
-
-                    token.WaitHandle.WaitOne(session.Profile.PollIntervalMs);
-                }
-
-                throw new AutomationOperationException(
-                    AutomationErrorCode.Timeout,
-                    $"The requested control state was not observed within {requestedTimeout.TotalMilliseconds:0} milliseconds.");
-            });
+            token => WaitForState(
+                GetSession(),
+                selector,
+                condition,
+                requestedTimeout,
+                token));
     }
+
+    private ControlSummary WaitForState(
+        AutomationSession session,
+        ControlSelector selector,
+        WaitCondition condition,
+        TimeSpan requestedTimeout,
+        CancellationToken cancellationToken)
+    {
+        var deadline = DateTime.UtcNow + requestedTimeout;
+        while (DateTime.UtcNow <= deadline)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var element = GetSingleMatchOrThrow(
+                session,
+                FindMatches(session, selector));
+            var summary = ObserveControl(element, session.Profile);
+            if (WaitConditionEvaluator.Matches(summary, condition))
+            {
+                return summary ?? MissingControlSummary();
+            }
+
+            cancellationToken.WaitHandle.WaitOne(session.Profile.PollIntervalMs);
+        }
+
+        throw new AutomationOperationException(
+            AutomationErrorCode.Timeout,
+            $"The requested control state was not observed within {requestedTimeout.TotalMilliseconds:0} milliseconds.");
+    }
+
+    private ControlSummary? ObserveControl(
+        AutomationElement? element,
+        ApplicationProfile profile)
+        => element is null ? null : _observer.Observe(element, profile);
 
     public Task<AutomationResult<WindowCapture>> CaptureApplicationWindowAsync(
         CancellationToken cancellationToken)
@@ -416,21 +542,27 @@ public sealed class DesktopAutomationController : IAsyncDisposable
             cancellationToken,
             (session, _) =>
             {
-                if (!session.Profile.EnableScreenshots)
+                return CaptureRedactedElement(
+                    session.MainWindow,
+                    session.Profile);
+            });
+
+    public Task<AutomationResult<WindowCapture>> CaptureControlImageAsync(
+        ControlSelector selector,
+        CancellationToken cancellationToken)
+        => ExecuteWithSessionAsync(
+            cancellationToken,
+            (session, _) =>
+            {
+                var element = ResolveSingle(session, selector);
+                if (IsSensitiveElement(element, session.Profile))
                 {
                     throw new AutomationOperationException(
                         AutomationErrorCode.ApplicationNotAllowed,
-                        "Window capture is disabled by the application profile.");
+                        "Capturing a password or sensitive control is not permitted.");
                 }
 
-                using var capture = FlaUI.Core.Capturing.Capture.Element(session.MainWindow);
-                using var stream = new MemoryStream();
-                capture.Bitmap.Save(stream, ImageFormat.Png);
-                return new WindowCapture(
-                    "image/png",
-                    Convert.ToBase64String(stream.ToArray()),
-                    capture.Bitmap.Width,
-                    capture.Bitmap.Height);
+                return CaptureRedactedElement(element, session.Profile);
             });
 
     public async ValueTask DisposeAsync()
@@ -527,43 +659,12 @@ public sealed class DesktopAutomationController : IAsyncDisposable
             var value = await _worker.RunAsync(action, timeout, cancellationToken);
             return AutomationResult<T>.Success(value);
         }
-        catch (AutomationOperationException exception)
-        {
-            _logger.LogInformation(
-                "Automation operation failed with {Code}: {Message}",
-                exception.Code,
-                exception.Message);
-            return AutomationResult<T>.Failure(
-                exception.Code,
-                exception.Message,
-                exception.Candidates);
-        }
-        catch (TimeoutException exception)
-        {
-            _logger.LogWarning(exception, "Automation operation timed out.");
-            return AutomationResult<T>.Failure(
-                AutomationErrorCode.Timeout,
-                exception.Message);
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            return AutomationResult<T>.Failure(
-                AutomationErrorCode.OperationCancelled,
-                "The automation operation was cancelled.");
-        }
-        catch (UnauthorizedAccessException exception)
-        {
-            _logger.LogWarning(exception, "Automation access was denied.");
-            return AutomationResult<T>.Failure(
-                AutomationErrorCode.AccessDenied,
-                "Windows denied access to the target process or control.");
-        }
         catch (Exception exception)
         {
             _logger.LogError(exception, "Unexpected automation failure.");
-            return AutomationResult<T>.Failure(
-                AutomationErrorCode.AutomationFailure,
-                "The automation operation failed unexpectedly. See the server log for details.");
+            return AutomationExceptionResultMapper.Map<T>(
+                exception,
+                cancellationToken.IsCancellationRequested);
         }
     }
 
@@ -587,14 +688,7 @@ public sealed class DesktopAutomationController : IAsyncDisposable
         AutomationSession session,
         ControlSelector selector)
     {
-        var expanded = _selectorResolver.ExpandSemanticSelector(
-            session.Profile,
-            selector);
-        var matches = _selectorResolver.FindMatches(
-            session.MainWindow,
-            expanded,
-            session.Profile.MaxResults,
-            session.Profile.MaxTreeDepth);
+        var matches = FindMatches(session, selector);
 
         return matches.Count switch
         {
@@ -604,6 +698,23 @@ public sealed class DesktopAutomationController : IAsyncDisposable
             1 => matches[0],
             _ => throw Ambiguous(session, matches)
         };
+    }
+
+    private IReadOnlyList<AutomationElement> FindMatches(
+        AutomationSession session,
+        ControlSelector selector)
+    {
+        var matchSets = _selectorResolver
+            .ExpandSemanticSelectors(session.Profile, selector)
+            .Select(expanded => _selectorResolver.FindMatches(
+                session.MainWindow,
+                expanded,
+                session.Profile.MaxResults,
+                session.Profile.MaxTreeDepth))
+            .ToArray();
+        return matchSets.FirstOrDefault(matches => matches.Count == 1)
+            ?? matchSets.FirstOrDefault(matches => matches.Count > 1)
+            ?? [];
     }
 
     private AutomationOperationException Ambiguous(
@@ -616,6 +727,18 @@ public sealed class DesktopAutomationController : IAsyncDisposable
                 .Take(10)
                 .Select(element => _observer.Observe(element, session.Profile))
                 .ToArray());
+
+    private AutomationElement? GetSingleMatchOrThrow(
+        AutomationSession session,
+        IReadOnlyList<AutomationElement> matches)
+    {
+        if (matches.Count > 1)
+        {
+            throw Ambiguous(session, matches);
+        }
+
+        return matches.SingleOrDefault();
+    }
 
     private ControlTreeNode BuildTree(
         AutomationElement element,
@@ -638,14 +761,26 @@ public sealed class DesktopAutomationController : IAsyncDisposable
             return new ControlTreeNode(_observer.Observe(element, profile), []);
         }
 
-        var children = new List<ControlTreeNode>();
-        foreach (var child in element.FindAllChildren())
-        {
-            if (remaining <= 0)
-            {
-                break;
-            }
+        var children = BuildChildren(
+            element,
+            profile,
+            depth,
+            ref remaining,
+            cancellationToken);
 
+        return new ControlTreeNode(_observer.Observe(element, profile), children);
+    }
+
+    private IReadOnlyList<ControlTreeNode> BuildChildren(
+        AutomationElement element,
+        ApplicationProfile profile,
+        int depth,
+        ref int remaining,
+        CancellationToken cancellationToken)
+    {
+        var children = new List<ControlTreeNode>();
+        foreach (var child in element.FindAllChildren().Take(remaining))
+        {
             children.Add(BuildTree(
                 child,
                 profile,
@@ -654,72 +789,21 @@ public sealed class DesktopAutomationController : IAsyncDisposable
                 cancellationToken));
         }
 
-        return new ControlTreeNode(_observer.Observe(element, profile), children);
+        return children;
     }
 
-    private static bool MatchesCondition(
-        AutomationElement? element,
-        ApplicationProfile profile,
-        WaitCondition condition)
-    {
-        if (condition.Property == WaitProperty.Exists)
-        {
-            return condition.Comparison switch
-            {
-                WaitComparison.True => element is not null,
-                WaitComparison.False => element is null,
-                _ => throw new AutomationOperationException(
-                    AutomationErrorCode.AutomationFailure,
-                    "Exists waits require the True or False comparison.")
-            };
-        }
-
-        if (element is null)
-        {
-            return false;
-        }
-
-        var observer = new ControlObserver();
-        var summary = observer.Observe(element, profile);
-        var actual = condition.Property switch
-        {
-            WaitProperty.Name => summary.Name,
-            WaitProperty.Value => summary.Value,
-            WaitProperty.IsEnabled => summary.IsEnabled.ToString(),
-            WaitProperty.IsOffscreen => summary.IsOffscreen.ToString(),
-            _ => null
-        };
-
-        return condition.Comparison switch
-        {
-            WaitComparison.Equals => string.Equals(
-                actual,
-                condition.ExpectedValue,
-                StringComparison.Ordinal),
-            WaitComparison.NotEquals => !string.Equals(
-                actual,
-                condition.ExpectedValue,
-                StringComparison.Ordinal),
-            WaitComparison.Contains => actual?.Contains(
-                condition.ExpectedValue ?? string.Empty,
-                StringComparison.Ordinal) is true,
-            WaitComparison.True => bool.TryParse(actual, out var parsed) && parsed,
-            WaitComparison.False => bool.TryParse(actual, out var parsed) && !parsed,
-            _ => false
-        };
-    }
-
-    private static ScrollAmount GetScrollAmount(int steps, int iteration)
-    {
-        if (iteration >= Math.Abs(steps) || steps == 0)
-        {
-            return ScrollAmount.NoAmount;
-        }
-
-        return steps > 0
-            ? ScrollAmount.SmallIncrement
-            : ScrollAmount.SmallDecrement;
-    }
+    private static ControlSummary MissingControlSummary()
+        => new(
+            null,
+            null,
+            "Missing",
+            null,
+            false,
+            true,
+            new RectangleInfo(0, 0, 0, 0),
+            null,
+            false,
+            []);
 
     private static AutomationOperationException Unsupported(
         string pattern,
@@ -791,10 +875,15 @@ public sealed class DesktopAutomationController : IAsyncDisposable
 
     private static void VerifyProcess(ApplicationProfile profile, int processId)
     {
-        Process process;
+        using var process = GetProcess(processId);
+        ValidateProcess(profile, processId, process);
+    }
+
+    private static Process GetProcess(int processId)
+    {
         try
         {
-            process = Process.GetProcessById(processId);
+            return Process.GetProcessById(processId);
         }
         catch (ArgumentException)
         {
@@ -803,29 +892,35 @@ public sealed class DesktopAutomationController : IAsyncDisposable
                 $"Process {processId} was not found.",
                 null);
         }
+    }
 
-        using (process)
+    private static void ValidateProcess(
+        ApplicationProfile profile,
+        int processId,
+        Process process)
+    {
+        if (process.HasExited)
         {
-            if (process.HasExited)
-            {
-                throw new AutomationOperationException(
-                    AutomationErrorCode.ProcessExited,
-                    $"Process {processId} has exited.");
-            }
+            throw new AutomationOperationException(
+                AutomationErrorCode.ProcessExited,
+                $"Process {processId} has exited.");
+        }
 
-            var actualPath = process.MainModule?.FileName;
-            if (string.IsNullOrWhiteSpace(actualPath) ||
-                !string.Equals(
-                    Path.GetFullPath(actualPath),
-                    profile.ExecutablePath,
-                    StringComparison.OrdinalIgnoreCase))
-            {
-                throw new AutomationOperationException(
-                    AutomationErrorCode.ApplicationNotAllowed,
-                    $"Process {processId} does not match application profile '{profile.Id}'.");
-            }
+        var actualPath = process.MainModule?.FileName;
+        if (!PathsMatch(actualPath, profile.ExecutablePath))
+        {
+            throw new AutomationOperationException(
+                AutomationErrorCode.ApplicationNotAllowed,
+                $"Process {processId} does not match application profile '{profile.Id}'.");
         }
     }
+
+    private static bool PathsMatch(string? actualPath, string expectedPath)
+        => !string.IsNullOrWhiteSpace(actualPath) &&
+            string.Equals(
+                Path.GetFullPath(actualPath),
+                expectedPath,
+                StringComparison.OrdinalIgnoreCase);
 
     private static Window WaitForMainWindow(
         FlaApplication application,
@@ -838,16 +933,8 @@ public sealed class DesktopAutomationController : IAsyncDisposable
         while (DateTime.UtcNow <= deadline)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (application.HasExited)
-            {
-                throw new AutomationOperationException(
-                    AutomationErrorCode.ProcessExited,
-                    "The application exited before its main window was available.");
-            }
-
-            var matchingWindow = application
-                .GetAllTopLevelWindows(automation)
-                .FirstOrDefault(window => MatchesWindow(window, profile.MainWindow));
+            ThrowIfExitedBeforeWindow(application);
+            var matchingWindow = FindMainWindow(application, automation, profile);
             if (matchingWindow is not null)
             {
                 return matchingWindow;
@@ -861,37 +948,26 @@ public sealed class DesktopAutomationController : IAsyncDisposable
             $"No top-level window matched profile '{profile.Id}'.");
     }
 
-    private static bool MatchesWindow(
-        Window window,
-        WindowSelector selector)
+    private static void ThrowIfExitedBeforeWindow(FlaApplication application)
     {
-        if (!string.IsNullOrWhiteSpace(selector.Title) &&
-            !string.Equals(window.Title, selector.Title, StringComparison.Ordinal))
+        if (application.HasExited)
         {
-            return false;
+            throw new AutomationOperationException(
+                AutomationErrorCode.ProcessExited,
+                "The application exited before its main window was available.");
         }
-
-        if (!string.IsNullOrWhiteSpace(selector.ClassName) &&
-            !string.Equals(
-                window.ClassName,
-                selector.ClassName,
-                StringComparison.Ordinal))
-        {
-            return false;
-        }
-
-        if (!string.IsNullOrWhiteSpace(selector.TitleRegex) &&
-            !Regex.IsMatch(
-                window.Title,
-                selector.TitleRegex,
-                RegexOptions.CultureInvariant,
-                TimeSpan.FromMilliseconds(250)))
-        {
-            return false;
-        }
-
-        return true;
     }
+
+    private static Window? FindMainWindow(
+        FlaApplication application,
+        FlaUI.Core.AutomationBase automation,
+        ApplicationProfile profile)
+        => application
+            .GetAllTopLevelWindows(automation)
+            .FirstOrDefault(window => WindowSelectorMatcher.Matches(
+                window.Title,
+                window.ClassName,
+                profile.MainWindow));
 
     private void LogAudit(
         string action,
@@ -913,4 +989,160 @@ public sealed class DesktopAutomationController : IAsyncDisposable
             ?? selector.Name
             ?? selector.ControlType
             ?? "unspecified";
+
+    private static WindowCapture CaptureRedactedElement(
+        AutomationElement element,
+        ApplicationProfile profile)
+    {
+        if (!profile.EnableScreenshots)
+        {
+            throw new AutomationOperationException(
+                AutomationErrorCode.ApplicationNotAllowed,
+                "Image capture is disabled by the application profile.");
+        }
+
+        using var capture = FlaUI.Core.Capturing.Capture.Element(element);
+        RedactSensitiveDescendants(
+            capture.Bitmap,
+            element,
+            profile);
+        using var stream = new MemoryStream();
+        capture.Bitmap.Save(stream, ImageFormat.Png);
+        return new WindowCapture(
+            "image/png",
+            Convert.ToBase64String(stream.ToArray()),
+            capture.Bitmap.Width,
+            capture.Bitmap.Height);
+    }
+
+    private static void RedactSensitiveDescendants(
+        Bitmap bitmap,
+        AutomationElement root,
+        ApplicationProfile profile)
+    {
+        var rootBounds = root.BoundingRectangle;
+        using var graphics = Graphics.FromImage(bitmap);
+        foreach (var descendant in root.FindAllDescendants())
+        {
+            RedactSensitiveElement(
+                graphics,
+                bitmap.Size,
+                rootBounds,
+                descendant,
+                profile);
+        }
+    }
+
+    private static void RedactSensitiveElement(
+        Graphics graphics,
+        Size bitmapSize,
+        Rectangle rootBounds,
+        AutomationElement element,
+        ApplicationProfile profile)
+    {
+        if (!IsSensitiveElement(element, profile))
+        {
+            return;
+        }
+
+        var bounds = element.BoundingRectangle;
+        var rectangle = Rectangle.Intersect(
+            new Rectangle(
+                bounds.X - rootBounds.X,
+                bounds.Y - rootBounds.Y,
+                bounds.Width,
+                bounds.Height),
+            new Rectangle(Point.Empty, bitmapSize));
+        if (!rectangle.IsEmpty)
+        {
+            graphics.FillRectangle(Brushes.Black, rectangle);
+        }
+    }
+
+    private static bool IsSensitiveElement(
+        AutomationElement element,
+        ApplicationProfile profile)
+        => SafeIsPassword(element) ||
+            SafeHasSensitiveAutomationId(element, profile);
+
+    private static bool SafeIsPassword(AutomationElement element)
+    {
+        try
+        {
+            return element.Properties.IsPassword.ValueOrDefault;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool SafeHasSensitiveAutomationId(
+        AutomationElement element,
+        ApplicationProfile profile)
+    {
+        try
+        {
+            return !string.IsNullOrWhiteSpace(element.AutomationId) &&
+                profile.SensitiveAutomationIds.Contains(element.AutomationId);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private void RecordShadowProposal(
+        AutomationSession session,
+        SemanticTargetDefinition target,
+        ControlResolutionResult result)
+    {
+        var proposal = ProfileUpdateProposalFactory.Create(
+            session.Profile.Id,
+            target,
+            result,
+            DateTimeOffset.UtcNow);
+        if (proposal is null)
+        {
+            return;
+        }
+
+        RemoveDuplicateProposal(session.Profile.Id, result, proposal.CandidateId);
+        _profileUpdateProposals[proposal.ProposalId] = proposal;
+        TrimProposals();
+    }
+
+    private void RemoveDuplicateProposal(
+        string profileId,
+        ControlResolutionResult result,
+        string candidateId)
+    {
+        var identity = (
+            ProfileId: profileId,
+            result.SemanticKey,
+            result.ViewKey,
+            CandidateId: candidateId);
+        var duplicate = _profileUpdateProposals.Values.FirstOrDefault(existing =>
+            (
+                existing.ProfileId,
+                existing.SemanticKey,
+                existing.ViewKey,
+                existing.CandidateId
+            ).Equals(identity));
+        if (duplicate is not null)
+        {
+            _profileUpdateProposals.Remove(duplicate.ProposalId);
+        }
+    }
+
+    private void TrimProposals()
+    {
+        var overflow = _profileUpdateProposals.Count - 100;
+        foreach (var proposal in _profileUpdateProposals.Values
+                     .OrderBy(item => item.CreatedAt)
+                     .Take(Math.Max(0, overflow)))
+        {
+            _profileUpdateProposals.Remove(proposal.ProposalId);
+        }
+    }
 }

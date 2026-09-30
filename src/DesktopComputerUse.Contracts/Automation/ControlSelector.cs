@@ -1,6 +1,6 @@
 namespace DesktopComputerUse.Contracts.Automation;
 
-public sealed record ControlSelector
+public record ControlSelector
 {
     public string? SemanticKey { get; init; }
 

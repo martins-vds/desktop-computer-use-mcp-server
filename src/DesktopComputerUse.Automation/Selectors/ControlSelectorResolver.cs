@@ -10,29 +10,48 @@ public sealed class ControlSelectorResolver
     public ControlSelector ExpandSemanticSelector(
         ApplicationProfile profile,
         ControlSelector selector)
+        => ExpandSemanticSelectors(profile, selector).First();
+
+    public IReadOnlyList<ControlSelector> ExpandSemanticSelectors(
+        ApplicationProfile profile,
+        ControlSelector selector)
     {
         if (string.IsNullOrWhiteSpace(selector.SemanticKey))
         {
-            return selector;
+            return [selector];
         }
 
-        if (!profile.SemanticSelectors.TryGetValue(selector.SemanticKey, out var configured))
+        if (!profile.EffectiveSemanticTargets.TryGetValue(
+                selector.SemanticKey,
+                out var target))
         {
             throw new AutomationOperationException(
                 AutomationErrorCode.ControlNotFound,
                 $"Semantic selector '{selector.SemanticKey}' is not defined by profile '{profile.Id}'.");
         }
 
-        return configured with
+        var configured = target.Strategies
+            .OrderByDescending(strategy => strategy.Weight)
+            .ToArray();
+        if (configured.Length == 0)
         {
-            SemanticKey = null,
-            AutomationId = selector.AutomationId ?? configured.AutomationId,
-            Name = selector.Name ?? configured.Name,
-            ControlType = selector.ControlType ?? configured.ControlType,
-            ClassName = selector.ClassName ?? configured.ClassName,
-            Ancestor = selector.Ancestor ?? configured.Ancestor,
-            Index = selector.Index ?? configured.Index
-        };
+            throw new AutomationOperationException(
+                AutomationErrorCode.ControlNotFound,
+                $"Semantic target '{selector.SemanticKey}' has no selector strategies.");
+        }
+
+        return configured
+            .Select(strategy => (ControlSelector)(strategy with
+            {
+                SemanticKey = null,
+                AutomationId = selector.AutomationId ?? strategy.AutomationId,
+                Name = selector.Name ?? strategy.Name,
+                ControlType = selector.ControlType ?? strategy.ControlType,
+                ClassName = selector.ClassName ?? strategy.ClassName,
+                Ancestor = selector.Ancestor ?? strategy.Ancestor,
+                Index = selector.Index ?? strategy.Index
+            }))
+            .ToArray();
     }
 
     public IReadOnlyList<AutomationElement> FindMatches(
@@ -41,57 +60,58 @@ public sealed class ControlSelectorResolver
         int maxResults,
         int maxAncestorDepth)
     {
-        if (selector.IsEmpty)
-        {
-            throw new AutomationOperationException(
-                AutomationErrorCode.ControlNotFound,
-                "At least one selector field is required.");
-        }
+        EnsureSelector(selector);
 
         var candidates = FindInitialCandidates(root, selector)
             .Where(element => Matches(element, selector, maxAncestorDepth))
             .Take(maxResults + 1)
             .ToArray();
 
-        if (selector.Index is int index)
-        {
-            return index < candidates.Length
-                ? [candidates[index]]
-                : [];
-        }
-
-        return candidates;
+        return ApplyIndex(candidates, selector.Index);
     }
+
+    private static void EnsureSelector(ControlSelector selector)
+    {
+        if (selector.IsEmpty)
+        {
+            throw new AutomationOperationException(
+                AutomationErrorCode.ControlNotFound,
+                "At least one selector field is required.");
+        }
+    }
+
+    private static IReadOnlyList<AutomationElement> ApplyIndex(
+        AutomationElement[] candidates,
+        int? index)
+        => index is int value
+            ? value < candidates.Length ? [candidates[value]] : []
+            : candidates;
 
     private static IEnumerable<AutomationElement> FindInitialCandidates(
         AutomationElement root,
         ControlSelector selector)
     {
-        AutomationElement[] descendants;
-        if (!string.IsNullOrWhiteSpace(selector.AutomationId))
+        var searches = new (bool Applies, Func<AutomationElement[]> Search)[]
         {
-            descendants = root.FindAllDescendants(
-                factory => factory.ByAutomationId(selector.AutomationId));
-        }
-        else if (!string.IsNullOrWhiteSpace(selector.Name))
-        {
-            descendants = root.FindAllDescendants(
-                factory => factory.ByName(selector.Name));
-        }
-        else if (TryParseControlType(selector.ControlType, out var controlType))
-        {
-            descendants = root.FindAllDescendants(
-                factory => factory.ByControlType(controlType));
-        }
-        else if (!string.IsNullOrWhiteSpace(selector.ClassName))
-        {
-            descendants = root.FindAllDescendants(
-                factory => factory.ByClassName(selector.ClassName));
-        }
-        else
-        {
-            descendants = root.FindAllDescendants();
-        }
+            (
+                !string.IsNullOrWhiteSpace(selector.AutomationId),
+                () => root.FindAllDescendants(
+                    factory => factory.ByAutomationId(selector.AutomationId!))),
+            (
+                !string.IsNullOrWhiteSpace(selector.Name),
+                () => root.FindAllDescendants(
+                    factory => factory.ByName(selector.Name!))),
+            (
+                TryParseControlType(selector.ControlType, out var controlType),
+                () => root.FindAllDescendants(
+                    factory => factory.ByControlType(controlType))),
+            (
+                !string.IsNullOrWhiteSpace(selector.ClassName),
+                () => root.FindAllDescendants(
+                    factory => factory.ByClassName(selector.ClassName!)))
+        };
+        var search = searches.FirstOrDefault(candidate => candidate.Applies).Search;
+        var descendants = search?.Invoke() ?? root.FindAllDescendants();
 
         if (MatchesWithoutAncestor(root, selector))
         {
@@ -106,66 +126,52 @@ public sealed class ControlSelectorResolver
         ControlSelector selector,
         int maxAncestorDepth)
     {
-        if (!MatchesWithoutAncestor(element, selector))
-        {
-            return false;
-        }
+        return MatchesWithoutAncestor(element, selector) &&
+            (selector.Ancestor is null ||
+             HasMatchingAncestor(element.Parent, selector.Ancestor, maxAncestorDepth));
+    }
 
-        if (selector.Ancestor is null)
-        {
-            return true;
-        }
+    private static bool HasMatchingAncestor(
+        AutomationElement? ancestor,
+        ControlSelector selector,
+        int remainingDepth)
+        => EnumerateAncestors(ancestor, remainingDepth)
+            .Any(candidate => MatchesWithoutAncestor(candidate, selector));
 
-        var ancestor = element.Parent;
-        for (var depth = 0; ancestor is not null && depth < maxAncestorDepth; depth++)
+    private static IEnumerable<AutomationElement> EnumerateAncestors(
+        AutomationElement? ancestor,
+        int remainingDepth)
+    {
+        while (ancestor is not null && remainingDepth-- > 0)
         {
-            if (MatchesWithoutAncestor(ancestor, selector.Ancestor))
-            {
-                return true;
-            }
-
+            yield return ancestor;
             ancestor = ancestor.Parent;
         }
-
-        return false;
     }
 
     private static bool MatchesWithoutAncestor(
         AutomationElement element,
         ControlSelector selector)
-    {
-        if (!string.IsNullOrWhiteSpace(selector.AutomationId) &&
-            !string.Equals(
-                element.AutomationId,
-                selector.AutomationId,
-                StringComparison.Ordinal))
+        => new[]
         {
-            return false;
-        }
+            MatchesOptional(element.AutomationId, selector.AutomationId, StringComparison.Ordinal),
+            MatchesOptional(element.Name, selector.Name, StringComparison.Ordinal),
+            MatchesOptional(element.ClassName, selector.ClassName, StringComparison.Ordinal),
+            MatchesControlType(element, selector.ControlType)
+        }.All(matches => matches);
 
-        if (!string.IsNullOrWhiteSpace(selector.Name) &&
-            !string.Equals(element.Name, selector.Name, StringComparison.Ordinal))
-        {
-            return false;
-        }
+    private static bool MatchesOptional(
+        string? actual,
+        string? expected,
+        StringComparison comparison)
+        => string.IsNullOrWhiteSpace(expected) ||
+            string.Equals(actual, expected, comparison);
 
-        if (!string.IsNullOrWhiteSpace(selector.ClassName) &&
-            !string.Equals(
-                element.ClassName,
-                selector.ClassName,
-                StringComparison.Ordinal))
-        {
-            return false;
-        }
-
-        if (TryParseControlType(selector.ControlType, out var controlType) &&
-            element.ControlType != controlType)
-        {
-            return false;
-        }
-
-        return true;
-    }
+    private static bool MatchesControlType(
+        AutomationElement element,
+        string? expected)
+        => !TryParseControlType(expected, out var controlType) ||
+            element.ControlType == controlType;
 
     private static bool TryParseControlType(string? value, out ControlType controlType)
     {

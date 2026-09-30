@@ -1,6 +1,7 @@
 using DesktopComputerUse.Automation;
 using DesktopComputerUse.Automation.Selectors;
 using DesktopComputerUse.Contracts.Automation;
+using DesktopComputerUse.Contracts.Profiles;
 
 namespace DesktopComputerUse.Automation.Tests;
 
@@ -104,5 +105,44 @@ public sealed class ControlSelectorResolverTests
 
         Assert.Equal(AutomationErrorCode.ControlNotFound, exception.Code);
         Assert.Contains("missing", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ExpandSemanticSelectors_returns_v2_strategies_by_weight()
+    {
+        var profile = TestProfile.Create() with
+        {
+            SchemaVersion = 2,
+            SemanticTargets = new Dictionary<string, SemanticTargetDefinition>
+            {
+                ["save"] = new()
+                {
+                    Intent = "Save record",
+                    Strategies =
+                    [
+                        new SelectorStrategy
+                        {
+                            Name = "Apply",
+                            ControlType = "Button",
+                            Weight = 0.5
+                        },
+                        new SelectorStrategy
+                        {
+                            AutomationId = "SaveButton",
+                            ControlType = "Button",
+                            Weight = 1
+                        }
+                    ]
+                }
+            }
+        };
+
+        var expanded = _resolver.ExpandSemanticSelectors(
+            profile,
+            new ControlSelector { SemanticKey = "save" });
+
+        Assert.Equal(2, expanded.Count);
+        Assert.Equal("SaveButton", expanded[0].AutomationId);
+        Assert.Equal("Apply", expanded[1].Name);
     }
 }

@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using DesktopComputerUse.Contracts.Automation;
 using DesktopComputerUse.Contracts.Configuration;
+using DesktopComputerUse.Contracts.Profiles;
 
 namespace DesktopComputerUse.Automation.Applications;
 
@@ -61,13 +62,13 @@ public sealed class ApplicationProfileStore : IApplicationProfileStore
         var profiles = Directory
             .EnumerateFiles(fullDirectory, "*.application.json", SearchOption.TopDirectoryOnly)
             .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
-            .Select(LoadProfile)
+            .Select(LoadFile)
             .ToArray();
 
         return new ApplicationProfileStore(profiles);
     }
 
-    private static ApplicationProfile LoadProfile(string path)
+    public static ApplicationProfile LoadFile(string path)
     {
         using var stream = File.OpenRead(path);
         var profile = JsonSerializer.Deserialize<ApplicationProfile>(stream, SerializerOptions)
@@ -88,6 +89,9 @@ public sealed class ApplicationProfileStore : IApplicationProfileStore
             SemanticSelectors = new Dictionary<string, ControlSelector>(
                 profile.SemanticSelectors,
                 StringComparer.OrdinalIgnoreCase),
+            SemanticTargets = new Dictionary<string, SemanticTargetDefinition>(
+                profile.SemanticTargets,
+                StringComparer.OrdinalIgnoreCase),
             SensitiveAutomationIds = new HashSet<string>(
                 profile.SensitiveAutomationIds,
                 StringComparer.OrdinalIgnoreCase)
@@ -95,6 +99,25 @@ public sealed class ApplicationProfileStore : IApplicationProfileStore
 
         ApplicationProfileValidator.Validate(normalized);
         return normalized;
+    }
+
+    public static void SaveFile(string path, ApplicationProfile profile)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        ApplicationProfileValidator.Validate(profile);
+
+        var fullPath = Path.GetFullPath(path);
+        Directory.CreateDirectory(
+            Path.GetDirectoryName(fullPath)
+            ?? throw new ProfileValidationException(
+                $"Profile output path '{path}' has no parent directory."));
+
+        var options = new JsonSerializerOptions(SerializerOptions)
+        {
+            WriteIndented = true
+        };
+        using var stream = File.Create(fullPath);
+        JsonSerializer.Serialize(stream, profile, options);
     }
 
     private static string ResolvePath(string path, string baseDirectory)

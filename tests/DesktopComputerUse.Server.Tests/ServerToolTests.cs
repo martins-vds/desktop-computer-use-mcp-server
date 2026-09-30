@@ -1,11 +1,14 @@
 using System.Reflection;
 using DesktopComputerUse.Automation;
 using DesktopComputerUse.Automation.Applications;
+using DesktopComputerUse.Automation.Discovery;
 using DesktopComputerUse.Automation.FlaUi;
+using DesktopComputerUse.Automation.Resolution;
 using DesktopComputerUse.Automation.Selectors;
 using DesktopComputerUse.Automation.Threading;
 using DesktopComputerUse.Contracts.Automation;
 using DesktopComputerUse.Contracts.Configuration;
+using DesktopComputerUse.Server.Prompts;
 using DesktopComputerUse.Server.Tools;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -52,12 +55,26 @@ public sealed class ServerToolTests
             controller,
             new ControlSelector { AutomationId = "SaveButton" },
             CancellationToken.None);
+        var snapshot = await ControlTools.SnapshotApplicationSchema(
+            controller,
+            maxDepth: 3,
+            maxResults: 25,
+            CancellationToken.None);
+        var resolution = await ControlTools.ResolveControlIntent(
+            controller,
+            "save",
+            maximumCandidates: 5,
+            CancellationToken.None);
 
         Assert.False(state.Succeeded);
         Assert.Equal(AutomationErrorCode.ApplicationNotAttached, state.Error?.Code);
         Assert.False(control.Succeeded);
         Assert.Equal(AutomationErrorCode.ApplicationNotAttached, control.Error?.Code);
-        Assert.Equal(2, worker.RunCount);
+        Assert.False(snapshot.Succeeded);
+        Assert.Equal(AutomationErrorCode.ApplicationNotAttached, snapshot.Error?.Code);
+        Assert.False(resolution.Succeeded);
+        Assert.Equal(AutomationErrorCode.ApplicationNotAttached, resolution.Error?.Code);
+        Assert.Equal(4, worker.RunCount);
     }
 
     [Fact]
@@ -84,6 +101,11 @@ public sealed class ServerToolTests
             "detach_application",
             "get_application_state",
             "capture_application_window",
+            "snapshot_application_schema",
+            "resolve_control_intent",
+            "get_profile_update_proposals",
+            "export_profile_update_patch",
+            "capture_control_image",
             "inspect_controls",
             "find_control",
             "get_control_properties",
@@ -96,7 +118,10 @@ public sealed class ServerToolTests
         };
 
         Assert.Equal(expectedNames.Order(), discovered.Keys.Order());
-        Assert.All(discovered.Values, item => Assert.True(item.Attribute!.UseStructuredContent));
+        Assert.All(
+            discovered.Values.Where(item => item.Attribute!.Name != "capture_control_image"),
+            item => Assert.True(item.Attribute!.UseStructuredContent));
+        Assert.False(discovered["capture_control_image"].Attribute!.UseStructuredContent);
         Assert.All(
             new[] { typeof(ApplicationTools), typeof(ControlTools) },
             type => Assert.NotNull(type.GetCustomAttribute<McpServerToolTypeAttribute>()));
@@ -119,7 +144,7 @@ public sealed class ServerToolTests
         var tools = provider.GetServices<McpServerTool>()
             .ToDictionary(tool => tool.ProtocolTool.Name, StringComparer.Ordinal);
 
-        Assert.Equal(15, tools.Count);
+        Assert.Equal(20, tools.Count);
         AssertSchemaProperties(
             tools["launch_application"],
             required: ["profileId"],
@@ -132,6 +157,40 @@ public sealed class ServerToolTests
             tools["detach_application"],
             required: [],
             properties: ["terminateOwnedProcess"]);
+        AssertSchemaProperties(
+            tools["snapshot_application_schema"],
+            required: [],
+            properties: ["maxDepth", "maxResults"]);
+        AssertSchemaProperties(
+            tools["resolve_control_intent"],
+            required: ["semanticKey"],
+            properties: ["maximumCandidates", "semanticKey"]);
+        AssertSchemaProperties(
+            tools["capture_control_image"],
+            required: ["selector"],
+            properties: ["selector"]);
+    }
+
+    [Fact]
+    public void Profile_prompts_expose_read_only_authoring_workflows()
+    {
+        var promptNames = typeof(ProfilePrompts)
+            .GetMethods(BindingFlags.Public | BindingFlags.Static)
+            .Select(method => method.GetCustomAttribute<McpServerPromptAttribute>())
+            .Where(attribute => attribute is not null)
+            .Select(attribute => attribute!.Name)
+            .Order()
+            .ToArray();
+
+        Assert.Equal(
+            new[]
+            {
+                "add_semantic_target",
+                "profile_application",
+                "review_profile_healing"
+            },
+            promptNames);
+        Assert.NotNull(typeof(ProfilePrompts).GetCustomAttribute<McpServerPromptTypeAttribute>());
     }
 
     private static void AssertSchemaProperties(
@@ -170,13 +229,18 @@ public sealed class ServerToolTests
     private static DesktopAutomationController CreateController(
         IApplicationProfileStore profiles,
         IAutomationWorker worker)
-        => new(
+    {
+        var observer = new ControlObserver();
+        return new DesktopAutomationController(
             profiles,
             worker,
             new FlaUiAutomationFactory(),
             new ControlSelectorResolver(),
-            new ControlObserver(),
+            observer,
+            new ApplicationSnapshotBuilder(observer),
+            new FuzzyControlResolver(),
             NullLogger<DesktopAutomationController>.Instance);
+    }
 
     private sealed class RecordingWorker : IAutomationWorker
     {

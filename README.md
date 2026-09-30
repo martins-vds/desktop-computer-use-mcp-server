@@ -29,6 +29,12 @@ The server implements:
 - Optional application-window-only capture
 - Structured MCP results and typed failures
 - Audit logging to stderr
+- Versioned application profiles with legacy compatibility
+- Rich UIA snapshots with view signatures, relationships, and nearby labels
+- Deterministic fuzzy intent ranking with score evidence
+- Shadow-mode profile healing proposals that never write files
+
+The repository also includes a profile builder and an optional GitHub Copilot SDK adapter. The desktop automation server itself does not depend on Copilot.
 
 It intentionally does not expose arbitrary shell commands, PowerShell, executable paths, desktop-wide inspection, coordinate clicking, global typing, or clipboard access.
 
@@ -109,6 +115,7 @@ An example profile is available at [`profiles/example.application.json`](profile
 
 ```json
 {
+  "schemaVersion": 2,
   "id": "example-app",
   "displayName": "Example WinForms App",
   "executablePath": "C:/Program Files/Example/Example.exe",
@@ -121,10 +128,29 @@ An example profile is available at [`profiles/example.application.json`](profile
   "maxTreeDepth": 6,
   "maxResults": 300,
   "enableScreenshots": false,
-  "semanticSelectors": {
+  "semanticTargets": {
     "save-record": {
-      "automationId": "SaveButton",
-      "controlType": "Button"
+      "intent": "Save the current record",
+      "synonyms": ["Save", "Apply", "Commit changes"],
+      "expectedControlTypes": ["Button", "MenuItem"],
+      "requiredPatterns": ["Invoke"],
+      "strategies": [
+        {
+          "automationId": "SaveButton",
+          "controlType": "Button",
+          "weight": 1.0
+        },
+        {
+          "name": "Save",
+          "controlType": "Button",
+          "weight": 0.8
+        }
+      ],
+      "thresholds": {
+        "minimumConfidence": 0.85,
+        "minimumMargin": 0.12
+      },
+      "allowAiAssistance": false
     }
   },
   "sensitiveAutomationIds": [
@@ -134,6 +160,61 @@ An example profile is available at [`profiles/example.application.json`](profile
 ```
 
 Relative executable and working-directory paths are resolved from the profile file's directory. The executable is allowed to be absent when profiles are loaded so profiles can be deployed before applications, but launch fails explicitly until the file exists.
+
+Version 1 profiles using `semanticSelectors` remain supported. At runtime they are adapted to one exact version 2 strategy.
+
+### Fuzzy semantic targets
+
+The resolver uses this order:
+
+1. Exact configured strategies, ordered by weight.
+2. Required control type, UIA pattern, view, and ancestor gates.
+3. Deterministic text, nearby-label, help-text, structure, and fingerprint scoring.
+4. An ambiguity result when the best score or margin is insufficient.
+
+Fuzzy resolution is exposed diagnostically through `resolve_control_intent`. State-changing tools continue to use validated configured strategies; they do not automatically act on a fuzzy candidate.
+
+Candidate IDs such as `node-0017` are valid only inside one application snapshot. Profiles store selectors and fingerprints, never snapshot-local candidate IDs.
+
+### Profile builder
+
+Build and run:
+
+```powershell
+dotnet build src/DesktopComputerUse.ProfileBuilder/DesktopComputerUse.ProfileBuilder.csproj
+dotnet run --project src/DesktopComputerUse.ProfileBuilder -- help
+```
+
+Commands:
+
+```text
+validate <profile>
+snapshot <profile> <output.json> [--attach <pid>]
+search <profile> <snapshot.json> <semantic-key>
+add-target <profile> <snapshot.json> <semantic-key> <intent> <candidate-id> <output-profile> [--pattern <pattern>]
+diff <original-profile> <draft-profile>
+apply <draft-profile> <target-profile>
+```
+
+Recommended authoring sequence:
+
+1. Start with a minimal allowlisted profile.
+2. Capture a snapshot on Windows.
+3. Inspect or search candidates.
+4. Add one reviewed target at a time.
+5. Review the profile diff.
+6. Apply the validated draft explicitly.
+
+The optional Copilot command is intentionally in a separate project:
+
+```powershell
+dotnet run --project src/DesktopComputerUse.ProfileBuilder.Copilot -- `
+  <profile> <snapshot.json> <semantic-key> [model]
+```
+
+It sends only the bounded candidate list produced by deterministic ranking. Copilot can select only an existing candidate ID; it cannot invoke UI actions or write a profile. Building this optional project downloads the separately licensed Copilot CLI runtime through `GitHub.Copilot.SDK`.
+
+The command refuses to contact Copilot unless the selected target explicitly sets `"allowAiAssistance": true`. Candidate payloads omit control values and suppress help text for password or redacted controls.
 
 ### UIA2 versus UIA3
 
@@ -253,6 +334,11 @@ Do not redirect server logs to stdout. MCP protocol messages use stdout; the ser
 | `detach_application` | Release the active automation session |
 | `get_application_state` | Return process, profile, window, and backend state |
 | `inspect_controls` | Return a bounded, redacted control subtree |
+| `snapshot_application_schema` | Return a rich, bounded UIA snapshot with snapshot-local candidate IDs and a view signature |
+| `resolve_control_intent` | Run exact and deterministic fuzzy ranking without performing an action |
+| `get_profile_update_proposals` | List shadow-mode selector-healing proposals |
+| `export_profile_update_patch` | Export a reviewed semantic-target patch without writing files |
+| `capture_control_image` | Return a selected control as an MCP image block after redacting sensitive descendants |
 | `find_control` | Resolve exactly one control |
 | `get_control_properties` | Return control properties and supported patterns |
 | `invoke_control` | Use the UI Automation Invoke pattern |
@@ -264,6 +350,8 @@ Do not redirect server logs to stdout. MCP protocol messages use stdout; the ser
 | `capture_application_window` | Capture only the attached main window when profile-enabled |
 
 The server permits one active application session at a time. This avoids concurrent state-changing actions racing on the same interactive desktop.
+
+The server also provides the read-only MCP prompts `profile_application`, `add_semantic_target`, and `review_profile_healing` for VS Code and other MCP clients that support prompts.
 
 ## Qualification workflow
 
@@ -289,8 +377,12 @@ Before using a real application:
 - Do not automate UAC secure-desktop prompts.
 - Mark password and sensitive fields with `sensitiveAutomationIds`.
 - Enable screenshots only for profiles that require them.
+- Control and window captures black out password controls and automation IDs listed in `sensitiveAutomationIds`; direct capture of a sensitive control is rejected.
 - Review stderr audit logs without recording field values.
 - Keep profile directories writable only by trusted administrators or the dedicated automation account.
+- Treat names, help text, labels, OCR, screenshots, and other observed UI content as untrusted data.
+- Do not use model-reported confidence as authorization to act.
+- Review profile patches outside the action server before applying them.
 
 An attached process must have the same normalized executable path configured by its profile. A caller cannot supply an arbitrary path to launch or attach.
 
@@ -300,11 +392,16 @@ An attached process must have the same normalized executable path configured by 
 src/
   DesktopComputerUse.Contracts/   Typed profiles, selectors, results, and errors
   DesktopComputerUse.Automation/  Policy, MTA worker, FlaUI backends, and actions
+  DesktopComputerUse.ProfileIntelligence/ Vendor-neutral bounded ranking interface
+  DesktopComputerUse.ProfileIntelligence.Copilot/ Optional Copilot SDK adapter
+  DesktopComputerUse.ProfileBuilder/ Snapshot, ranking, draft, diff, and apply CLI
+  DesktopComputerUse.ProfileBuilder.Copilot/ Optional Copilot-backed ranking CLI
   DesktopComputerUse.Server/      MCP stdio host and tools
   DesktopComputerUse.Server.Linux/ Portable MCP companion with explicit platform errors
 tests/
   DesktopComputerUse.Automation.Tests/
   DesktopComputerUse.Server.Tests/
+  DesktopComputerUse.ProfileIntelligence.Tests/
   DesktopComputerUse.TestApp/     Deterministic Windows Forms fixture
 profiles/
   example.application.json
@@ -317,6 +414,8 @@ profiles/
 - Hard cancellation cannot interrupt every blocking operating-system UIA call; operations are serialized and use cooperative timeouts.
 - Process attachment verifies executable paths but does not yet enforce Authenticode publisher identity.
 - Owner-drawn controls may require a future bounded image/OCR adapter.
+- Fuzzy resolution is diagnostic/shadow-mode and does not silently replace configured selectors for mutations.
+- Copilot structured output used by the optional adapter is isolated behind an SDK API currently marked for evaluation.
 - The initial implementation does not provide remote HTTP transport.
 - The Linux release cannot operate Windows Forms controls; it exists for profile discovery, MCP compatibility checks, and explicit platform diagnostics.
 
@@ -350,3 +449,5 @@ The implementation uses permissively licensed open-source components:
 - .NET: MIT
 
 WinAppDriver is not used.
+
+The optional `GitHub.Copilot.SDK` wrapper is MIT-licensed, but it downloads/uses the separately licensed GitHub Copilot CLI runtime and normally uses proprietary model services. The MCP server and deterministic profile builder core remain usable without Copilot. Review the [Copilot CLI license](https://github.com/github/copilot-cli/blob/main/LICENSE.md) before redistributing a Copilot-enabled profile builder.

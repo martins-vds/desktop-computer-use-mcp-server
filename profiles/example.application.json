@@ -1,4 +1,5 @@
 {
+  "schemaVersion": 2,
   "id": "test-winforms-app",
   "displayName": "Desktop Computer Use Test App",
   "executablePath": "../tests/DesktopComputerUse.TestApp/bin/Debug/net8.0-windows/DesktopComputerUse.TestApp.exe",
@@ -11,42 +12,127 @@
   "maxTreeDepth": 6,
   "maxResults": 300,
   "enableScreenshots": false,
-  "semanticSelectors": {
+  "semanticTargets": {
     "customer-name": {
-      "automationId": "CustomerNameTextBox",
-      "controlType": "Edit"
+      "intent": "Editable customer name field",
+      "synonyms": ["Customer name", "Name"],
+      "expectedControlTypes": ["Edit"],
+      "requiredPatterns": ["Value"],
+      "strategies": [
+        {
+          "automationId": "CustomerNameTextBox",
+          "controlType": "Edit",
+          "weight": 1.0
+        }
+      ],
+      "thresholds": {
+        "minimumConfidence": 0.7,
+        "minimumMargin": 0.1
+      }
     },
     "save-customer": {
-      "automationId": "SaveButton",
-      "controlType": "Button"
+      "intent": "Save the current customer record",
+      "synonyms": ["Save", "Apply", "Commit changes"],
+      "expectedControlTypes": ["Button"],
+      "requiredPatterns": ["Invoke"],
+      "strategies": [
+        {
+          "automationId": "SaveButton",
+          "controlType": "Button",
+          "weight": 1.0
+        }
+      ],
+      "thresholds": {
+        "minimumConfidence": 0.75,
+        "minimumMargin": 0.12
+      }
     },
     "customer-enabled": {
-      "automationId": "EnabledCheckBox",
-      "controlType": "CheckBox"
+      "intent": "Whether the customer is enabled",
+      "synonyms": ["Enabled", "Active"],
+      "expectedControlTypes": ["CheckBox"],
+      "strategies": [
+        {
+          "automationId": "EnabledCheckBox",
+          "controlType": "CheckBox",
+          "weight": 1.0
+        }
+      ]
     },
     "customer-role": {
-      "automationId": "RoleComboBox",
-      "controlType": "ComboBox"
+      "intent": "Customer role selector",
+      "synonyms": ["Role", "Permission level"],
+      "expectedControlTypes": ["ComboBox"],
+      "strategies": [
+        {
+          "automationId": "RoleComboBox",
+          "controlType": "ComboBox",
+          "weight": 1.0
+        }
+      ]
     },
     "navigation-tree": {
-      "automationId": "NavigationTreeView",
-      "controlType": "Tree"
+      "intent": "Application navigation tree",
+      "synonyms": ["Navigation", "Departments", "Regions"],
+      "expectedControlTypes": ["Tree"],
+      "strategies": [
+        {
+          "automationId": "NavigationTreeView",
+          "controlType": "Tree",
+          "weight": 1.0
+        }
+      ]
     },
     "customer-grid": {
-      "automationId": "CustomerDataGrid"
+      "intent": "Customers data grid",
+      "synonyms": ["Customers", "Customer list"],
+      "expectedControlTypes": ["DataGrid", "Table"],
+      "strategies": [
+        {
+          "automationId": "CustomerDataGrid",
+          "weight": 1.0
+        }
+      ]
     },
     "validation-status": {
-      "automationId": "ValidationStatusLabel",
-      "controlType": "Text"
+      "intent": "Customer validation and save status",
+      "synonyms": ["Validation status", "Save status"],
+      "expectedControlTypes": ["Text"],
+      "strategies": [
+        {
+          "automationId": "ValidationStatusLabel",
+          "controlType": "Text",
+          "weight": 1.0
+        }
+      ]
     },
     "delayed-action": {
-      "automationId": "DelayedActionButton",
-      "controlType": "Button"
+      "intent": "Run the delayed action",
+      "synonyms": ["Delayed action", "Run delayed action"],
+      "expectedControlTypes": ["Button"],
+      "requiredPatterns": ["Invoke"],
+      "strategies": [
+        {
+          "automationId": "DelayedActionButton",
+          "controlType": "Button",
+          "weight": 1.0
+        }
+      ]
     },
     "delayed-status": {
-      "automationId": "DelayedStatusLabel",
-      "controlType": "Text"
+      "intent": "Delayed action status",
+      "synonyms": ["Delayed status"],
+      "expectedControlTypes": ["Text"],
+      "strategies": [
+        {
+          "automationId": "DelayedStatusLabel",
+          "controlType": "Text",
+          "weight": 1.0
+        }
+      ]
     }
   },
-  "sensitiveAutomationIds": []
+  "sensitiveAutomationIds": [
+    "CustomerPasswordTextBox"
+  ]
 }
