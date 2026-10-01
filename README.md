@@ -11,8 +11,6 @@ The native automation implementation uses:
 
 Release archives are produced for Windows and Linux on both x64 and ARM64. The Windows executable contains the full FlaUI automation implementation. The Linux executable exposes the same MCP discovery surface and can list profiles, but native Windows Forms actions return an explicit `PlatformNotSupported` result.
 
-The repository still contains the original Playwright browser-test scaffold. Playwright is separate from the native desktop server and is not used to automate normal Windows Forms controls.
-
 ## Status
 
 The server implements:

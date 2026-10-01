@@ -1,12 +1,4 @@
 
-# Playwright
-node_modules/
-/test-results/
-/playwright-report/
-/blob-report/
-/playwright/.cache/
-/playwright/.auth/
-
 # .NET
 ## A streamlined .gitignore for modern .NET projects
 ## including temporary files, build results, and
