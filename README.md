@@ -40,14 +40,21 @@ It intentionally does not expose arbitrary shell commands, PowerShell, executabl
 
 Image and OCR automation are deferred until qualification against a real application demonstrates that semantic UI Automation is insufficient.
 
+## Documentation
+
+- [Profile builder guide](docs/profile-builder.md)
+- [Release artifacts and versioning](docs/releases.md)
+- [Quality analysis](artifacts/quality/QUALITY-ANALYSIS.md)
+
 ## Requirements
 
 Runtime requirements:
 
 - Windows 10 or Windows 11
-- .NET 8 runtime
 - An interactive signed-in Windows user session
 - The MCP server and target application running as the same user and at compatible integrity levels
+
+Downloaded release executables are self-contained and do not require a separate .NET runtime. Running framework-dependent build output requires the .NET 8 runtime.
 
 Development requirements:
 
@@ -200,6 +207,8 @@ Downloaded releases contain a self-contained Windows executable, so .NET does no
 ```
 
 The full profile builder is published for Windows x64 and Windows ARM64 only because live `snapshot` discovery depends on FlaUI and an interactive Windows desktop. Offline Linux builder artifacts are not published.
+
+See the [profile builder guide](docs/profile-builder.md) for installation, a minimal bootstrap profile, and complete command examples.
 
 Commands:
 
@@ -465,7 +474,10 @@ Each platform archive contains:
 
 - `VERSION`, containing `1.2.3`
 - `release-manifest.json`, containing the tag, semantic version, assembly version, component, runtime identifier, and Git commit
-- The self-contained executable, README, application settings, and example profile
+- The self-contained executable, README, and example profile
+- `appsettings.json` in server archives
+
+See [release artifacts and versioning](docs/releases.md) for architecture selection, checksum verification, archive contents, and release creation.
 
 Manual dispatch can create the validated release tag at the selected commit when the tag does not already exist.
 
