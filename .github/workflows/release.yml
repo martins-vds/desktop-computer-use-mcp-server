@@ -12,7 +12,7 @@ on:
         type: string
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   prepare:
@@ -61,58 +61,30 @@ jobs:
       - name: Test
         run: dotnet test DesktopComputerUse.sln --configuration Release --no-build
 
-  publish:
+  publish-linux:
     name: Publish ${{ matrix.asset }}
     needs:
       - prepare
       - test
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
-            rid: linux-x64
+          - rid: linux-x64
             tfm: net8.0
             component: server
             binary: desktop-computer-use
             project: src/DesktopComputerUse.Server.Linux/DesktopComputerUse.Server.Linux.csproj
             asset: desktop-computer-use-linux-x64
-          - os: ubuntu-latest
-            rid: linux-arm64
+          - rid: linux-arm64
             tfm: net8.0
             component: server
             binary: desktop-computer-use
             project: src/DesktopComputerUse.Server.Linux/DesktopComputerUse.Server.Linux.csproj
             asset: desktop-computer-use-linux-arm64
-          - os: windows-latest
-            rid: win-x64
-            tfm: net8.0-windows
-            component: server
-            binary: desktop-computer-use
-            project: src/DesktopComputerUse.Server/DesktopComputerUse.Server.csproj
-            asset: desktop-computer-use-windows-x64
-          - os: windows-latest
-            rid: win-arm64
-            tfm: net8.0-windows
-            component: server
-            binary: desktop-computer-use
-            project: src/DesktopComputerUse.Server/DesktopComputerUse.Server.csproj
-            asset: desktop-computer-use-windows-arm64
-          - os: windows-latest
-            rid: win-x64
-            tfm: net8.0-windows
-            component: profile-builder
-            binary: desktop-computer-use-profile-builder
-            project: src/DesktopComputerUse.ProfileBuilder/DesktopComputerUse.ProfileBuilder.csproj
-            asset: desktop-computer-use-profile-builder-windows-x64
-          - os: windows-latest
-            rid: win-arm64
-            tfm: net8.0-windows
-            component: profile-builder
-            binary: desktop-computer-use-profile-builder
-            project: src/DesktopComputerUse.ProfileBuilder/DesktopComputerUse.ProfileBuilder.csproj
-            asset: desktop-computer-use-profile-builder-windows-arm64
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -183,6 +155,229 @@ jobs:
           mkdir -p package/profiles
           cp README.md package/
           cp profiles/example.application.json package/profiles/
+          cp publish/appsettings.json package/
+          printf '%s\n' "$RELEASE_VERSION" > package/VERSION
+          cat > package/release-manifest.json <<EOF
+          {
+            "tag": "$RELEASE_TAG",
+            "version": "$RELEASE_VERSION",
+            "assemblyVersion": "$ASSEMBLY_VERSION",
+            "component": "${{ matrix.component }}",
+            "runtimeIdentifier": "${{ matrix.rid }}",
+            "commit": "$GITHUB_SHA",
+            "authenticodeSigned": false,
+            "signingProvider": "none"
+          }
+          EOF
+          cp "publish/${{ matrix.binary }}" package/
+          chmod +x "package/${{ matrix.binary }}"
+
+      - name: Create Linux archive
+        shell: bash
+        run: >-
+          tar -C package -czf
+          "${{ matrix.asset }}-v${{ needs.prepare.outputs.version }}.tar.gz" .
+
+      - name: Upload packaged executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}-v${{ needs.prepare.outputs.version }}
+          path: ${{ matrix.asset }}-v${{ needs.prepare.outputs.version }}.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  publish-windows:
+    name: Publish and sign ${{ matrix.asset }}
+    needs:
+      - prepare
+      - test
+    runs-on: windows-latest
+    environment: artifact-signing
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AZURE_CORE_OUTPUT: none
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - rid: win-x64
+            tfm: net8.0-windows
+            component: server
+            binary: desktop-computer-use
+            project: src/DesktopComputerUse.Server/DesktopComputerUse.Server.csproj
+            asset: desktop-computer-use-windows-x64
+          - rid: win-arm64
+            tfm: net8.0-windows
+            component: server
+            binary: desktop-computer-use
+            project: src/DesktopComputerUse.Server/DesktopComputerUse.Server.csproj
+            asset: desktop-computer-use-windows-arm64
+          - rid: win-x64
+            tfm: net8.0-windows
+            component: profile-builder
+            binary: desktop-computer-use-profile-builder
+            project: src/DesktopComputerUse.ProfileBuilder/DesktopComputerUse.ProfileBuilder.csproj
+            asset: desktop-computer-use-profile-builder-windows-x64
+          - rid: win-arm64
+            tfm: net8.0-windows
+            component: profile-builder
+            binary: desktop-computer-use-profile-builder
+            project: src/DesktopComputerUse.ProfileBuilder/DesktopComputerUse.ProfileBuilder.csproj
+            asset: desktop-computer-use-profile-builder-windows-arm64
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Restore publish dependencies
+        shell: bash
+        run: dotnet restore "${{ matrix.project }}" --runtime "${{ matrix.rid }}"
+
+      - name: Publish single-file executable
+        shell: bash
+        run: >-
+          dotnet publish "${{ matrix.project }}"
+          --configuration Release
+          --runtime "${{ matrix.rid }}"
+          --self-contained true
+          --no-restore
+          --output publish
+          -p:PublishSingleFile=true
+          -p:IncludeNativeLibrariesForSelfExtract=true
+          -p:DebugType=None
+          -p:DebugSymbols=false
+          -p:Version="${{ needs.prepare.outputs.version }}"
+          -p:PackageVersion="${{ needs.prepare.outputs.version }}"
+          -p:AssemblyVersion="${{ needs.prepare.outputs.assembly_version }}"
+          -p:FileVersion="${{ needs.prepare.outputs.assembly_version }}"
+          -p:InformationalVersion="${{ needs.prepare.outputs.version }}"
+          -p:IncludeSourceRevisionInInformationalVersion=false
+          -p:RepositoryCommit="$GITHUB_SHA"
+          -p:ContinuousIntegrationBuild=true
+
+      - name: Verify published assembly version
+        shell: pwsh
+        env:
+          EXPECTED_VERSION: ${{ needs.prepare.outputs.version }}
+          EXPECTED_ASSEMBLY_VERSION: ${{ needs.prepare.outputs.assembly_version }}
+        run: |
+          $projectDirectory = Split-Path "${{ matrix.project }}"
+          $assembly = Join-Path $projectDirectory `
+            "bin/Release/${{ matrix.tfm }}/${{ matrix.rid }}/${{ matrix.binary }}.dll"
+          $versionInfo = [System.Diagnostics.FileVersionInfo]::GetVersionInfo(
+            (Resolve-Path $assembly)
+          )
+          $assemblyName = [System.Reflection.AssemblyName]::GetAssemblyName(
+            (Resolve-Path $assembly)
+          )
+          if ($assemblyName.Version.ToString() -ne $env:EXPECTED_ASSEMBLY_VERSION) {
+            throw "Expected AssemblyVersion $env:EXPECTED_ASSEMBLY_VERSION, got $($assemblyName.Version)."
+          }
+          if ($versionInfo.FileVersion -ne $env:EXPECTED_ASSEMBLY_VERSION) {
+            throw "Expected FileVersion $env:EXPECTED_ASSEMBLY_VERSION, got $($versionInfo.FileVersion)."
+          }
+          if ($versionInfo.ProductVersion -ne $env:EXPECTED_VERSION) {
+            throw "Expected ProductVersion $env:EXPECTED_VERSION, got $($versionInfo.ProductVersion)."
+          }
+
+      - name: Azure login using GitHub OIDC
+        if: vars.AZURE_ARTIFACT_SIGNING_ENABLED == 'true'
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Generate signing correlation ID
+        if: vars.AZURE_ARTIFACT_SIGNING_ENABLED == 'true'
+        shell: pwsh
+        run: |
+          "SIGNING_CORRELATION_ID=$([guid]::NewGuid())" |
+            Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Sign Windows executable
+        if: vars.AZURE_ARTIFACT_SIGNING_ENABLED == 'true'
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
+        with:
+          endpoint: ${{ vars.AZURE_ARTIFACT_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.AZURE_ARTIFACT_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.AZURE_ARTIFACT_SIGNING_PROFILE }}
+          files: ${{ github.workspace }}\publish\${{ matrix.binary }}.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+          correlation-id: ${{ env.SIGNING_CORRELATION_ID }}
+          exclude-environment-credential: true
+          exclude-workload-identity-credential: true
+          exclude-managed-identity-credential: true
+          exclude-shared-token-cache-credential: true
+          exclude-visual-studio-credential: true
+          exclude-visual-studio-code-credential: true
+          exclude-azure-cli-credential: false
+          exclude-azure-powershell-credential: true
+          exclude-azure-developer-cli-credential: true
+          exclude-interactive-browser-credential: true
+
+      - name: Verify Authenticode signature and timestamp
+        if: vars.AZURE_ARTIFACT_SIGNING_ENABLED == 'true'
+        shell: pwsh
+        run: |
+          $executable = Resolve-Path "publish\${{ matrix.binary }}.exe"
+          $signTool = Get-ChildItem `
+            "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" `
+            -ErrorAction SilentlyContinue |
+            Sort-Object {
+              try { [version]$_.Directory.Parent.Name }
+              catch { [version]"0.0" }
+            } -Descending |
+            Select-Object -First 1
+
+          if (-not $signTool) {
+            throw "SignTool.exe was not found on the runner."
+          }
+
+          & $signTool.FullName verify /pa /all /v /tw $executable
+          if ($LASTEXITCODE -ne 0) {
+            throw "SignTool verification failed with exit code $LASTEXITCODE."
+          }
+
+          $signature = Get-AuthenticodeSignature $executable
+          if ($signature.Status -ne "Valid") {
+            throw "Authenticode verification failed: $($signature.StatusMessage)"
+          }
+          if ($null -eq $signature.TimeStamperCertificate) {
+            throw "The signature has no timestamp countersignature."
+          }
+
+          Write-Host "Signer: $($signature.SignerCertificate.Subject)"
+          Write-Host "Signer thumbprint: $($signature.SignerCertificate.Thumbprint)"
+          Write-Host "Timestamp signer: $($signature.TimeStamperCertificate.Subject)"
+
+      - name: Stage release files
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+          ASSEMBLY_VERSION: ${{ needs.prepare.outputs.assembly_version }}
+          SIGNING_ENABLED: ${{ vars.AZURE_ARTIFACT_SIGNING_ENABLED }}
+        run: |
+          if [[ "$SIGNING_ENABLED" == "true" ]]; then
+            authenticode_signed=true
+            signing_provider="Azure Artifact Signing"
+          else
+            authenticode_signed=false
+            signing_provider="none"
+          fi
+
+          mkdir -p package/profiles
+          cp README.md package/
+          cp profiles/example.application.json package/profiles/
           if [[ -f publish/appsettings.json ]]; then
             cp publish/appsettings.json package/
           fi
@@ -194,25 +389,14 @@ jobs:
             "assemblyVersion": "$ASSEMBLY_VERSION",
             "component": "${{ matrix.component }}",
             "runtimeIdentifier": "${{ matrix.rid }}",
-            "commit": "$GITHUB_SHA"
+            "commit": "$GITHUB_SHA",
+            "authenticodeSigned": $authenticode_signed,
+            "signingProvider": "$signing_provider"
           }
           EOF
-          if [[ "${{ runner.os }}" == "Windows" ]]; then
-            cp "publish/${{ matrix.binary }}.exe" package/
-          else
-            cp "publish/${{ matrix.binary }}" package/
-            chmod +x "package/${{ matrix.binary }}"
-          fi
-
-      - name: Create Linux archive
-        if: runner.os == 'Linux'
-        shell: bash
-        run: >-
-          tar -C package -czf
-          "${{ matrix.asset }}-v${{ needs.prepare.outputs.version }}.tar.gz" .
+          cp "publish/${{ matrix.binary }}.exe" package/
 
       - name: Create Windows archive
-        if: runner.os == 'Windows'
         shell: pwsh
         run: >-
           Compress-Archive -Path package\*
@@ -222,7 +406,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.asset }}-v${{ needs.prepare.outputs.version }}
-          path: ${{ matrix.asset }}-v${{ needs.prepare.outputs.version }}.*
+          path: ${{ matrix.asset }}-v${{ needs.prepare.outputs.version }}.zip
           if-no-files-found: error
           retention-days: 7
 
@@ -230,8 +414,11 @@ jobs:
     name: Publish GitHub release
     needs:
       - prepare
-      - publish
+      - publish-linux
+      - publish-windows
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     env:
       GH_TOKEN: ${{ github.token }}
       RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}

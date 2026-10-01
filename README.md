@@ -42,6 +42,7 @@ Image and OCR automation are deferred until qualification against a real applica
 
 - [Profile builder guide](docs/profile-builder.md)
 - [Release artifacts and versioning](docs/releases.md)
+- [Azure Artifact Signing setup](docs/artifact-signing.md)
 - [Quality analysis](artifacts/quality/QUALITY-ANALYSIS.md)
 
 ## Requirements

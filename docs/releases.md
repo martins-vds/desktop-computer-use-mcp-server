@@ -70,9 +70,15 @@ Example `release-manifest.json`:
   "assemblyVersion": "1.2.3.0",
   "component": "profile-builder",
   "runtimeIdentifier": "win-x64",
-  "commit": "0123456789abcdef0123456789abcdef01234567"
+  "commit": "0123456789abcdef0123456789abcdef01234567",
+  "authenticodeSigned": true,
+  "signingProvider": "Azure Artifact Signing"
 }
 ```
+
+Linux manifests always report `authenticodeSigned: false`. During Azure Artifact Signing onboarding, Windows manifests also report `false`; after the production certificate profile is enabled they report `true`.
+
+See [Azure Artifact Signing setup](artifact-signing.md).
 
 ## Choose the correct architecture
 
