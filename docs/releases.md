@@ -76,7 +76,10 @@ Example `release-manifest.json`:
 }
 ```
 
-Linux manifests always report `authenticodeSigned: false`. During Azure Artifact Signing onboarding, Windows manifests also report `false`; after the production certificate profile is enabled they report `true`.
+Linux manifests always report `authenticodeSigned: false`. Windows manifests
+report `false` and `signingProvider: "none"` when signing is disabled, or `true`
+and `signingProvider: "Azure Artifact Signing"` after required signing and
+signature verification succeed.
 
 See [Azure Artifact Signing setup](artifact-signing.md).
 
@@ -148,12 +151,48 @@ git push origin v1.2.3
 
 Alternatively, run the **Release executables** workflow manually and enter `v1.2.3`.
 
+### Optional Windows artifact signing
+
+While Azure identity verification is pending, leave the repository variable
+`AZURE_ARTIFACT_SIGNING_ENABLED` unset or set it to `false`. Tag releases will
+publish unsigned Windows artifacts without Azure login or signing-environment
+approval. Linux releases are unchanged.
+
+Manual releases offer an `artifact_signing` choice:
+
+- `auto` (default): follow the repository variable.
+- `disabled`: release unsigned artifacts even if the repository default enables signing.
+- `enabled`: require signing and signature verification for every Windows artifact.
+
+For example, release without signing:
+
+```bash
+gh workflow run release.yml \
+  --repo martins-vds/desktop-computer-use-mcp-server \
+  -f tag=v1.2.3 \
+  -f artifact_signing=disabled
+```
+
+Once identity verification, the certificate profile, and signer RBAC are ready,
+enable signing for tag releases:
+
+```bash
+gh variable set AZURE_ARTIFACT_SIGNING_ENABLED \
+  --repo martins-vds/desktop-computer-use-mcp-server \
+  --body true
+```
+
+This must be a **repository-level** variable, not an environment variable.
+Signing-enabled runs retain the protected `artifact-signing` environment and
+fail the release on any signing or verification error; they never fall back to
+unsigned output. See [Azure Artifact Signing setup](artifact-signing.md).
+
 The workflow:
 
 1. Validates the tag.
 2. Builds and tests the solution.
 3. Publishes all six self-contained artifacts with identical semantic versions.
 4. Verifies assembly metadata.
-5. Writes package manifests.
+5. Optionally signs and verifies Windows executables, then writes package manifests.
 6. Generates SHA-256 checksums.
 7. Creates or updates the GitHub release.

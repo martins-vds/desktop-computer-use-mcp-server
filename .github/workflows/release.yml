@@ -10,6 +10,15 @@ on:
         description: Release tag, for example v1.0.0
         required: true
         type: string
+      artifact_signing:
+        description: Windows signing (auto uses the repository enablement variable)
+        required: true
+        type: choice
+        default: auto
+        options:
+          - auto
+          - enabled
+          - disabled
 
 permissions:
   contents: read
@@ -22,6 +31,7 @@ jobs:
       release_tag: ${{ steps.version.outputs.release_tag }}
       version: ${{ steps.version.outputs.version }}
       assembly_version: ${{ steps.version.outputs.assembly_version }}
+      signing_enabled: ${{ steps.signing.outputs.signing_enabled }}
     steps:
       - name: Validate and resolve release version
         id: version
@@ -38,6 +48,39 @@ jobs:
           echo "release_tag=$CANDIDATE_TAG" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "assembly_version=$version.0" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve artifact signing policy
+        id: signing
+        shell: bash
+        env:
+          SIGNING_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.artifact_signing || 'auto' }}
+          REPOSITORY_SIGNING_ENABLED: ${{ vars.AZURE_ARTIFACT_SIGNING_ENABLED }}
+        run: |
+          case "$SIGNING_MODE" in
+            auto)
+              case "$REPOSITORY_SIGNING_ENABLED" in
+                true) signing_enabled=true ;;
+                false|"") signing_enabled=false ;;
+                *)
+                  echo "Repository variable AZURE_ARTIFACT_SIGNING_ENABLED must be true or false." >&2
+                  exit 1
+                  ;;
+              esac
+              ;;
+            enabled) signing_enabled=true ;;
+            disabled) signing_enabled=false ;;
+            *)
+              echo "Artifact signing mode must be auto, enabled, or disabled." >&2
+              exit 1
+              ;;
+          esac
+
+          echo "signing_enabled=$signing_enabled" >> "$GITHUB_OUTPUT"
+          if [[ "$signing_enabled" == "true" ]]; then
+            echo "Windows artifacts: signing required; signing failures will fail the release." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Windows artifacts: unsigned; Azure login and signing are disabled." >> "$GITHUB_STEP_SUMMARY"
+          fi
 
   test:
     name: Test
@@ -187,12 +230,12 @@ jobs:
           retention-days: 7
 
   publish-windows:
-    name: Publish and sign ${{ matrix.asset }}
+    name: Publish ${{ matrix.asset }}
     needs:
       - prepare
       - test
     runs-on: windows-latest
-    environment: artifact-signing
+    environment: ${{ needs.prepare.outputs.signing_enabled == 'true' && 'artifact-signing' || 'release-unsigned' }}
     permissions:
       contents: read
       id-token: write
@@ -287,7 +330,7 @@ jobs:
           }
 
       - name: Azure login using GitHub OIDC
-        if: vars.AZURE_ARTIFACT_SIGNING_ENABLED == 'true'
+        if: needs.prepare.outputs.signing_enabled == 'true'
         uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
@@ -295,14 +338,14 @@ jobs:
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Generate signing correlation ID
-        if: vars.AZURE_ARTIFACT_SIGNING_ENABLED == 'true'
+        if: needs.prepare.outputs.signing_enabled == 'true'
         shell: pwsh
         run: |
           "SIGNING_CORRELATION_ID=$([guid]::NewGuid())" |
             Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: Sign Windows executable
-        if: vars.AZURE_ARTIFACT_SIGNING_ENABLED == 'true'
+        if: needs.prepare.outputs.signing_enabled == 'true'
         uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
         with:
           endpoint: ${{ vars.AZURE_ARTIFACT_SIGNING_ENDPOINT }}
@@ -325,7 +368,7 @@ jobs:
           exclude-interactive-browser-credential: true
 
       - name: Verify Authenticode signature and timestamp
-        if: vars.AZURE_ARTIFACT_SIGNING_ENABLED == 'true'
+        if: needs.prepare.outputs.signing_enabled == 'true'
         shell: pwsh
         run: |
           $executable = Resolve-Path "publish\${{ matrix.binary }}.exe"
@@ -365,7 +408,7 @@ jobs:
           RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
           RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
           ASSEMBLY_VERSION: ${{ needs.prepare.outputs.assembly_version }}
-          SIGNING_ENABLED: ${{ vars.AZURE_ARTIFACT_SIGNING_ENABLED }}
+          SIGNING_ENABLED: ${{ needs.prepare.outputs.signing_enabled }}
         run: |
           if [[ "$SIGNING_ENABLED" == "true" ]]; then
             authenticode_signed=true

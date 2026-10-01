@@ -16,7 +16,7 @@ Completed:
 - Created GitHub environment tag policy `v*`.
 - Added repository owner `martins-vds` as the required environment reviewer.
 - Added environment-scoped Azure identity secrets.
-- Added environment-scoped account, endpoint, profile, and enablement variables.
+- Added environment-scoped account, endpoint, and profile variables.
 - Split Linux and Windows release jobs.
 - Added signing and signature-verification steps to the Windows release job.
 
@@ -25,10 +25,15 @@ Pending portal-only work:
 1. Complete Public Trust identity validation.
 2. Create the Public Trust certificate profile.
 3. Assign signer RBAC to the service principal at certificate-profile scope.
-4. Set `AZURE_ARTIFACT_SIGNING_ENABLED` to `true`.
+4. Set the repository variable `AZURE_ARTIFACT_SIGNING_ENABLED` to `true`.
 5. Run and verify a staging release.
 
-The workflow currently leaves signing disabled so releases do not fail before the portal validation is complete. Each Windows package records its actual state in `release-manifest.json`.
+Signing defaults to disabled when the repository enablement variable is missing
+or `false`, so releases can continue before portal validation is complete.
+Unsigned Windows builds use the `release-unsigned` environment, not the protected
+`artifact-signing` environment, and skip Azure login, signing, and signature
+verification. Each Windows package records its actual state in
+`release-manifest.json`.
 
 ## Azure resources
 
@@ -84,14 +89,23 @@ AZURE_TENANT_ID
 AZURE_SUBSCRIPTION_ID
 ```
 
-Variables:
+Environment-scoped variables:
 
 ```text
 AZURE_ARTIFACT_SIGNING_ENDPOINT=https://eus.codesigning.azure.net
 AZURE_ARTIFACT_SIGNING_ACCOUNT=dcusign1396259398
 AZURE_ARTIFACT_SIGNING_PROFILE=desktop-computer-use-public
+```
+
+Repository variable (not environment-scoped):
+
+```text
 AZURE_ARTIFACT_SIGNING_ENABLED=false
 ```
+
+The enablement decision happens before the Windows job enters an environment.
+An existing environment-scoped `AZURE_ARTIFACT_SIGNING_ENABLED` is no longer used;
+set the repository variable to control tag releases.
 
 No Azure client secret is stored.
 
@@ -181,7 +195,6 @@ After the profile and RBAC assignment are active:
 ```bash
 gh variable set AZURE_ARTIFACT_SIGNING_ENABLED \
   --repo martins-vds/desktop-computer-use-mcp-server \
-  --env artifact-signing \
   --body true
 ```
 
@@ -189,9 +202,19 @@ Confirm:
 
 ```bash
 gh variable list \
-  --repo martins-vds/desktop-computer-use-mcp-server \
-  --env artifact-signing
+  --repo martins-vds/desktop-computer-use-mcp-server
 ```
+
+Manual runs also expose an `artifact_signing` choice:
+
+| Mode | Behavior |
+| --- | --- |
+| `auto` (default) | Use the repository variable; missing or `false` means unsigned |
+| `enabled` | Require signing for this run, regardless of the repository variable |
+| `disabled` | Publish unsigned Windows artifacts for this run, regardless of the repository variable |
+
+Tag-triggered releases always use `auto`. Signing failures never silently
+downgrade an enabled run to unsigned artifacts.
 
 ## Workflow behavior
 
@@ -199,14 +222,15 @@ The release workflow:
 
 1. Tests the solution.
 2. Publishes Linux artifacts without Azure access.
-3. Publishes Windows executables in the protected `artifact-signing` environment.
+3. Resolves signing once for all four Windows artifacts: enabled runs use the
+   protected `artifact-signing` environment; disabled runs use `release-unsigned`.
 4. Validates semantic assembly versions.
 5. Logs in to Azure with GitHub OIDC when signing is enabled.
-6. Signs the final self-contained EXE.
-7. Uses SHA-256 and Microsoft's RFC 3161 timestamp service.
-8. Verifies the signature with SignTool and `Get-AuthenticodeSignature`.
-9. Requires a timestamp countersignature.
-10. Packages the signed executable.
+6. When enabled, signs the final self-contained EXE.
+7. Uses SHA-256 and Microsoft's RFC 3161 timestamp service for signing.
+8. When enabled, verifies the signature with SignTool and `Get-AuthenticodeSignature`.
+9. Requires a timestamp countersignature for signed executables.
+10. Packages the executable, with a manifest declaring whether it was signed.
 11. Generates checksums over final archives.
 
 Pinned Azure actions:
@@ -222,7 +246,8 @@ The workflow references full release commit SHAs.
 
 Before the first production release:
 
-1. Run the release workflow manually with a new test version.
+1. Run the release workflow manually with a new test version and
+   `artifact_signing: enabled`.
 2. Approve the `artifact-signing` environment if protection rules require it.
 3. Confirm all four Windows matrix legs sign successfully.
 4. Download and extract each Windows ZIP.
@@ -282,9 +307,21 @@ To temporarily publish unsigned Windows onboarding builds:
 ```bash
 gh variable set AZURE_ARTIFACT_SIGNING_ENABLED \
   --repo martins-vds/desktop-computer-use-mcp-server \
-  --env artifact-signing \
   --body false
 ```
+
+Or disable signing for one manual release:
+
+```bash
+gh workflow run release.yml \
+  --repo martins-vds/desktop-computer-use-mcp-server \
+  -f tag=v1.2.3 \
+  -f artifact_signing=disabled
+```
+
+The `release-unsigned` environment is created automatically by GitHub on first
+use if it does not exist. Keep it free of signing secrets and required signing
+reviewers so unsigned releases are not blocked by signing approvals.
 
 Packages clearly report the unsigned state. Do not advertise such a release as signed.
 
@@ -295,7 +332,6 @@ If the signing experiment is abandoned, disable signing before deleting resource
 ```bash
 gh variable set AZURE_ARTIFACT_SIGNING_ENABLED \
   --repo martins-vds/desktop-computer-use-mcp-server \
-  --env artifact-signing \
   --body false
 ```
 
