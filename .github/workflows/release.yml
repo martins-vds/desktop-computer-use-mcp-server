@@ -73,23 +73,45 @@ jobs:
           - os: ubuntu-latest
             rid: linux-x64
             tfm: net8.0
+            component: server
+            binary: desktop-computer-use
             project: src/DesktopComputerUse.Server.Linux/DesktopComputerUse.Server.Linux.csproj
             asset: desktop-computer-use-linux-x64
           - os: ubuntu-latest
             rid: linux-arm64
             tfm: net8.0
+            component: server
+            binary: desktop-computer-use
             project: src/DesktopComputerUse.Server.Linux/DesktopComputerUse.Server.Linux.csproj
             asset: desktop-computer-use-linux-arm64
           - os: windows-latest
             rid: win-x64
             tfm: net8.0-windows
+            component: server
+            binary: desktop-computer-use
             project: src/DesktopComputerUse.Server/DesktopComputerUse.Server.csproj
             asset: desktop-computer-use-windows-x64
           - os: windows-latest
             rid: win-arm64
             tfm: net8.0-windows
+            component: server
+            binary: desktop-computer-use
             project: src/DesktopComputerUse.Server/DesktopComputerUse.Server.csproj
             asset: desktop-computer-use-windows-arm64
+          - os: windows-latest
+            rid: win-x64
+            tfm: net8.0-windows
+            component: profile-builder
+            binary: desktop-computer-use-profile-builder
+            project: src/DesktopComputerUse.ProfileBuilder/DesktopComputerUse.ProfileBuilder.csproj
+            asset: desktop-computer-use-profile-builder-windows-x64
+          - os: windows-latest
+            rid: win-arm64
+            tfm: net8.0-windows
+            component: profile-builder
+            binary: desktop-computer-use-profile-builder
+            project: src/DesktopComputerUse.ProfileBuilder/DesktopComputerUse.ProfileBuilder.csproj
+            asset: desktop-computer-use-profile-builder-windows-arm64
     runs-on: ${{ matrix.os }}
     steps:
       - name: Check out repository
@@ -134,7 +156,7 @@ jobs:
         run: |
           $projectDirectory = Split-Path "${{ matrix.project }}"
           $assembly = Join-Path $projectDirectory `
-            "bin/Release/${{ matrix.tfm }}/${{ matrix.rid }}/desktop-computer-use.dll"
+            "bin/Release/${{ matrix.tfm }}/${{ matrix.rid }}/${{ matrix.binary }}.dll"
           $versionInfo = [System.Diagnostics.FileVersionInfo]::GetVersionInfo(
             (Resolve-Path $assembly)
           )
@@ -161,22 +183,25 @@ jobs:
           mkdir -p package/profiles
           cp README.md package/
           cp profiles/example.application.json package/profiles/
-          cp publish/appsettings.json package/
+          if [[ -f publish/appsettings.json ]]; then
+            cp publish/appsettings.json package/
+          fi
           printf '%s\n' "$RELEASE_VERSION" > package/VERSION
           cat > package/release-manifest.json <<EOF
           {
             "tag": "$RELEASE_TAG",
             "version": "$RELEASE_VERSION",
             "assemblyVersion": "$ASSEMBLY_VERSION",
+            "component": "${{ matrix.component }}",
             "runtimeIdentifier": "${{ matrix.rid }}",
             "commit": "$GITHUB_SHA"
           }
           EOF
           if [[ "${{ runner.os }}" == "Windows" ]]; then
-            cp publish/desktop-computer-use.exe package/
+            cp "publish/${{ matrix.binary }}.exe" package/
           else
-            cp publish/desktop-computer-use package/
-            chmod +x package/desktop-computer-use
+            cp "publish/${{ matrix.binary }}" package/
+            chmod +x "package/${{ matrix.binary }}"
           fi
 
       - name: Create Linux archive

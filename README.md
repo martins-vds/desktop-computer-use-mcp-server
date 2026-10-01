@@ -193,6 +193,14 @@ dotnet build src/DesktopComputerUse.ProfileBuilder/DesktopComputerUse.ProfileBui
 dotnet run --project src/DesktopComputerUse.ProfileBuilder -- help
 ```
 
+Downloaded releases contain a self-contained Windows executable, so .NET does not need to be installed:
+
+```powershell
+& ".\desktop-computer-use-profile-builder.exe" help
+```
+
+The full profile builder is published for Windows x64 and Windows ARM64 only because live `snapshot` discovery depends on FlaUI and an interactive Windows desktop. Offline Linux builder artifacts are not published.
+
 Commands:
 
 ```text
@@ -449,12 +457,14 @@ The workflow verifies the executable metadata and attaches:
 - `desktop-computer-use-windows-arm64-v1.2.3.zip`
 - `desktop-computer-use-linux-x64-v1.2.3.tar.gz`
 - `desktop-computer-use-linux-arm64-v1.2.3.tar.gz`
+- `desktop-computer-use-profile-builder-windows-x64-v1.2.3.zip`
+- `desktop-computer-use-profile-builder-windows-arm64-v1.2.3.zip`
 - `SHA256SUMS.txt`
 
 Each platform archive contains:
 
 - `VERSION`, containing `1.2.3`
-- `release-manifest.json`, containing the tag, semantic version, assembly version, runtime identifier, and Git commit
+- `release-manifest.json`, containing the tag, semantic version, assembly version, component, runtime identifier, and Git commit
 - The self-contained executable, README, application settings, and example profile
 
 Manual dispatch can create the validated release tag at the selected commit when the tag does not already exist.
