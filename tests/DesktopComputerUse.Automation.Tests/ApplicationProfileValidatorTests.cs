@@ -8,6 +8,67 @@ namespace DesktopComputerUse.Automation.Tests;
 public sealed class ApplicationProfileValidatorTests
 {
     [Fact]
+    public void Native_input_is_default_off_and_keyboard_requires_foreground_even_when_disabled()
+    {
+        var profile = TestProfile.Create();
+        Assert.False(profile.NativeInput.Enabled);
+        Assert.True(profile.NativeInput.AllowMouse);
+        Assert.False(profile.NativeInput.AllowKeyboard);
+        Assert.True(profile.NativeInput.RequireForeground);
+        Assert.Equal("clientArea", profile.NativeInput.ConstrainTo);
+        Assert.Equal(["left"], profile.NativeInput.AllowedMouseButtons);
+        ApplicationProfileValidator.Validate(profile);
+        Assert.Throws<ProfileValidationException>(() => ApplicationProfileValidator.Validate(
+            profile with
+            {
+                NativeInput = new() { Enabled = false, AllowKeyboard = true, RequireForeground = false }
+            }));
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(10_001)]
+    public void Validate_rejects_unbounded_native_text_lengths(int length)
+    {
+        var exception = Assert.Throws<ProfileValidationException>(() => ApplicationProfileValidator.Validate(
+            TestProfile.Create() with { NativeInput = new() { MaximumTextLength = length } }));
+        Assert.Contains("maximum text length", exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(10_000)]
+    public void Validate_accepts_bounded_native_keyboard_input(int length)
+        => ApplicationProfileValidator.Validate(TestProfile.Create() with
+        {
+            NativeInput = new()
+            {
+                Enabled = true, AllowKeyboard = true, RequireForeground = true,
+                MaximumTextLength = length, ConstrainTo = "window",
+                AllowedMouseButtons = ["left", "right", "middle"]
+            }
+        });
+
+    [Fact]
+    public void Validate_rejects_invalid_native_buttons_and_boundaries()
+    {
+        var invalid = new NativeInputPolicy[]
+        {
+            new() { ConstrainTo = "desktop" },
+            new() { AllowedMouseButtons = [] },
+            new() { AllowedMouseButtons = ["left", "left"] },
+            new() { AllowedMouseButtons = ["extra"] },
+            new() { AllowedMouseButtons = null! }
+        };
+        foreach (var policy in invalid)
+        {
+            var exception = Assert.Throws<ProfileValidationException>(() => ApplicationProfileValidator.Validate(
+                TestProfile.Create() with { NativeInput = policy }));
+            Assert.False(string.IsNullOrWhiteSpace(exception.Message));
+        }
+    }
+
+    [Fact]
     public void Validate_accepts_boundary_values_and_valid_semantic_selectors()
     {
         var profile = TestProfile.Create() with

@@ -32,6 +32,25 @@ public sealed record ApplicationProfile
 
     public bool EnableScreenshots { get; init; }
 
+    public bool AllowMultipleInstances { get; init; }
+
+    public void ValidateWindowAndBackend()
+    {
+        if (!Enum.IsDefined(Backend))
+        {
+            throw new ProfileValidationException("The application profile has an unsupported automation backend.");
+        }
+        if (MainWindow is null)
+        {
+            throw new ProfileValidationException("The application profile requires a main-window selector.");
+        }
+    }
+
+    public NativeInputPolicy NativeInput { get; init; } = new();
+
+    [JsonIgnore]
+    public ApplicationProfileMetadata? Metadata { get; init; }
+
     public IReadOnlyDictionary<string, ControlSelector> SemanticSelectors { get; init; }
         = new Dictionary<string, ControlSelector>(StringComparer.OrdinalIgnoreCase);
 

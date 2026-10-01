@@ -26,12 +26,18 @@
     <ProjectReference Include="..\..\src\DesktopComputerUse.Contracts\DesktopComputerUse.Contracts.csproj" />
     <ProjectReference Include="..\..\src\DesktopComputerUse.Automation\DesktopComputerUse.Automation.csproj" />
     <ProjectReference Include="..\..\src\DesktopComputerUse.Server\DesktopComputerUse.Server.csproj" />
+    <ProjectReference Include="..\..\src\DesktopComputerUse.Server.Linux\DesktopComputerUse.Server.Linux.csproj" ReferenceOutputAssembly="false" />
   </ItemGroup>
 
   <Target Name="RemoveWindowsDesktopRuntimeOnNonWindows" BeforeTargets="GenerateBuildRuntimeConfigurationFiles" Condition="'$(OS)' != 'Windows_NT'">
     <ItemGroup>
       <RuntimeFramework Remove="Microsoft.WindowsDesktop.App" />
     </ItemGroup>
+  </Target>
+
+  <Target Name="CopyLinuxServerForParityTests" AfterTargets="Build">
+    <Copy SourceFiles="$(MSBuildProjectDirectory)/../../src/DesktopComputerUse.Server.Linux/bin/$(Configuration)/net8.0/desktop-computer-use.dll"
+          DestinationFolder="$(OutDir)Linux" />
   </Target>
 
 </Project>

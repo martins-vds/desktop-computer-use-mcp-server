@@ -1,5 +1,6 @@
 using DesktopComputerUse.Contracts.Automation;
 using DesktopComputerUse.Contracts.Configuration;
+using DesktopComputerUse.Automation.FlaUi;
 using FlaUI.Core.AutomationElements;
 using FlaUI.Core.Definitions;
 
@@ -60,16 +61,92 @@ public sealed class ControlSelectorResolver
         int maxResults,
         int maxAncestorDepth)
     {
-        EnsureSelector(selector);
-
-        var candidates = FindInitialCandidates(root, selector)
-            .Where(element => Matches(element, selector, maxAncestorDepth))
-            .Take(maxResults + 1)
-            .ToArray();
-
-        return ApplyIndex(candidates, selector.Index);
+        var result = FindMatchesWithDiagnostics(root, selector, maxResults, maxAncestorDepth);
+        result.EnsureCompleteForAction();
+        return result;
     }
 
+    public ControlSelectorMatchResult FindMatchesWithDiagnostics(
+        AutomationElement root,
+        ControlSelector selector,
+        int maxResults,
+        int maxAncestorDepth,
+        int maxNodes = 10000,
+        CancellationToken cancellationToken = default)
+    {
+        ValidateSearch(selector, maxResults, maxAncestorDepth, maxNodes);
+        var result = FindCandidates(root, element => element.FindAllChildren(),
+            (element, reader) => Matches(element, selector, maxAncestorDepth, reader),
+            maxResults, maxNodes, cancellationToken);
+        return new(ApplyIndex(result.Matches, selector.Index), result.Failures, result.Truncated);
+    }
+
+    internal static void ValidateSearch(
+        ControlSelector selector, int maxResults, int maxAncestorDepth, int maxNodes)
+    {
+        EnsureSelector(selector);
+        ArgumentOutOfRangeException.ThrowIfLessThan(maxResults, 1);
+        ArgumentOutOfRangeException.ThrowIfLessThan(maxNodes, 1);
+        ArgumentOutOfRangeException.ThrowIfNegative(maxAncestorDepth);
+        _ = TryParseControlType(selector.ControlType, out _);
+        if (selector.Ancestor is not null)
+            _ = TryParseControlType(selector.Ancestor.ControlType, out _);
+    }
+
+    internal static SelectorCandidateMatchResult<T> FindCandidates<T>(
+        T root,
+        Func<T, T[]> getChildren,
+        Func<T, SafeAutomationElementReader, bool> matchesCandidate,
+        int maxResults,
+        int maxNodes,
+        CancellationToken cancellationToken = default)
+    {
+        var failures = new List<AutomationDiagnostic>();
+        var matches = new List<T>();
+        var pending = new Stack<(T Element, int Depth)>();
+        pending.Push((root, 0));
+        var visited = 0;
+        var truncated = false;
+        var context = new AutomationDiagnostic { Operation = "resolveSelector" };
+        while (CanContinue(pending.Count, matches.Count, maxResults))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var (element, depth) = pending.Pop();
+            var reader = new SafeAutomationElementReader(context with
+            {
+                CandidateId = $"node-{++visited:0000}", Depth = depth
+            }, failures);
+            matches.AddRange(ReadCandidate(element, reader, matchesCandidate));
+            if (matches.Count > maxResults)
+            {
+                truncated = true;
+                break;
+            }
+            var children = reader.ReadChildren(() => getChildren(element));
+            truncated |= QueueChildren(pending, children, depth + 1, maxNodes - visited - pending.Count);
+        }
+        return new(matches.ToArray(), failures, IsTruncated(truncated, pending.Count));
+    }
+
+    private static bool CanContinue(int pending, int matches, int maxResults)
+        => pending > 0 && matches <= maxResults;
+
+    private static bool IsTruncated(bool truncated, int pending)
+        => truncated || pending > 0;
+
+    private static T[] ReadCandidate<T>(
+        T element, SafeAutomationElementReader reader, Func<T, SafeAutomationElementReader, bool> matches)
+    {
+        var before = reader.Failures.Count;
+        return matches(element, reader) && reader.Failures.Count == before ? [element] : [];
+    }
+
+    private static bool QueueChildren<T>(Stack<(T Element, int Depth)> pending, T[] children, int depth, int capacity)
+    {
+        foreach (var child in children.Take(capacity).Reverse())
+            pending.Push((child, depth));
+        return children.Length > capacity;
+    }
     private static void EnsureSelector(ControlSelector selector)
     {
         if (selector.IsEmpty)
@@ -80,98 +157,84 @@ public sealed class ControlSelectorResolver
         }
     }
 
-    private static IReadOnlyList<AutomationElement> ApplyIndex(
-        AutomationElement[] candidates,
+    internal static IReadOnlyList<T> ApplyIndex<T>(
+        T[] candidates,
         int? index)
-        => index is int value
-            ? value < candidates.Length ? [candidates[value]] : []
-            : candidates;
+        => index is int value ? SelectIndex(candidates, value) : candidates;
 
-    private static IEnumerable<AutomationElement> FindInitialCandidates(
-        AutomationElement root,
-        ControlSelector selector)
-    {
-        var searches = new (bool Applies, Func<AutomationElement[]> Search)[]
-        {
-            (
-                !string.IsNullOrWhiteSpace(selector.AutomationId),
-                () => root.FindAllDescendants(
-                    factory => factory.ByAutomationId(selector.AutomationId!))),
-            (
-                !string.IsNullOrWhiteSpace(selector.Name),
-                () => root.FindAllDescendants(
-                    factory => factory.ByName(selector.Name!))),
-            (
-                TryParseControlType(selector.ControlType, out var controlType),
-                () => root.FindAllDescendants(
-                    factory => factory.ByControlType(controlType))),
-            (
-                !string.IsNullOrWhiteSpace(selector.ClassName),
-                () => root.FindAllDescendants(
-                    factory => factory.ByClassName(selector.ClassName!)))
-        };
-        var search = searches.FirstOrDefault(candidate => candidate.Applies).Search;
-        var descendants = search?.Invoke() ?? root.FindAllDescendants();
-
-        if (MatchesWithoutAncestor(root, selector))
-        {
-            return descendants.Prepend(root);
-        }
-
-        return descendants;
-    }
+    private static IReadOnlyList<T> SelectIndex<T>(T[] candidates, int index)
+        => index >= 0 && index < candidates.Length ? [candidates[index]] : [];
 
     private static bool Matches(
         AutomationElement element,
         ControlSelector selector,
-        int maxAncestorDepth)
+        int maxAncestorDepth,
+        SafeAutomationElementReader reader)
     {
-        return MatchesWithoutAncestor(element, selector) &&
+        return MatchesWithoutAncestor(element, selector, reader) &&
             (selector.Ancestor is null ||
-             HasMatchingAncestor(element.Parent, selector.Ancestor, maxAncestorDepth));
+             HasMatchingAncestor(element, maxAncestorDepth, reader, ancestor => ancestor.Parent,
+                 (ancestor, safeReader) => MatchesWithoutAncestor(ancestor, selector.Ancestor, safeReader)));
     }
 
-    private static bool HasMatchingAncestor(
-        AutomationElement? ancestor,
-        ControlSelector selector,
-        int remainingDepth)
-        => EnumerateAncestors(ancestor, remainingDepth)
-            .Any(candidate => MatchesWithoutAncestor(candidate, selector));
+    internal static bool HasMatchingAncestor<T>(
+        T element,
+        int remainingDepth,
+        SafeAutomationElementReader reader,
+        Func<T, T?> getParent,
+        Func<T, SafeAutomationElementReader, bool> matches) where T : class
+        => EnumerateAncestors(element, remainingDepth, reader, getParent)
+            .Any(ancestor => matches(ancestor, reader));
 
-    private static IEnumerable<AutomationElement> EnumerateAncestors(
-        AutomationElement? ancestor,
-        int remainingDepth)
+    private static IEnumerable<T> EnumerateAncestors<T>(
+        T element, int remainingDepth, SafeAutomationElementReader reader, Func<T, T?> getParent) where T : class
     {
-        while (ancestor is not null && remainingDepth-- > 0)
+        var ancestor = element;
+        while (remainingDepth-- > 0)
         {
+            var parent = reader.Read("Parent", () => getParent(ancestor), null);
+            if (parent is null)
+                yield break;
+            ancestor = parent;
             yield return ancestor;
-            ancestor = ancestor.Parent;
         }
     }
 
     private static bool MatchesWithoutAncestor(
         AutomationElement element,
-        ControlSelector selector)
-        => new[]
+        ControlSelector selector,
+        SafeAutomationElementReader reader)
+    {
+        var properties = new Dictionary<string, Func<string?>>
         {
-            MatchesOptional(element.AutomationId, selector.AutomationId, StringComparison.Ordinal),
-            MatchesOptional(element.Name, selector.Name, StringComparison.Ordinal),
-            MatchesOptional(element.ClassName, selector.ClassName, StringComparison.Ordinal),
-            MatchesControlType(element, selector.ControlType)
-        }.All(matches => matches);
+            ["AutomationId"] = () => element.AutomationId,
+            ["Name"] = () => element.Name,
+            ["ClassName"] = () => element.ClassName,
+            ["ControlType"] = () => element.ControlType.ToString()
+        };
+        return MatchesProperties(selector, reader, property => properties[property]());
+    }
 
-    private static bool MatchesOptional(
-        string? actual,
+    public static bool MatchesProperties(
+        ControlSelector selector,
+        SafeAutomationElementReader reader,
+        Func<string, string?> getProperty)
+    {
+        var hasType = TryParseControlType(selector.ControlType, out var type);
+        return MatchesProperty("AutomationId", () => getProperty("AutomationId"), selector.AutomationId, reader) &&
+            MatchesProperty("Name", () => getProperty("Name"), selector.Name, reader) &&
+            MatchesProperty("ClassName", () => getProperty("ClassName"), selector.ClassName, reader) &&
+            (!hasType || MatchesProperty("ControlType", () => getProperty("ControlType"), type.ToString(), reader));
+    }
+
+    private static bool MatchesProperty(
+        string property,
+        Func<string?> getter,
         string? expected,
-        StringComparison comparison)
+        SafeAutomationElementReader reader)
         => string.IsNullOrWhiteSpace(expected) ||
-            string.Equals(actual, expected, comparison);
-
-    private static bool MatchesControlType(
-        AutomationElement element,
-        string? expected)
-        => !TryParseControlType(expected, out var controlType) ||
-            element.ControlType == controlType;
+            (reader.TryRead(property, getter, out var actual) &&
+             string.Equals(actual, expected, StringComparison.Ordinal));
 
     private static bool TryParseControlType(string? value, out ControlType controlType)
     {

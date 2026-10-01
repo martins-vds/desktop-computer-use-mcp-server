@@ -31,6 +31,10 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DesktopComputerUse.ProfileI
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DesktopComputerUse.ProfileBuilder.Copilot", "src\DesktopComputerUse.ProfileBuilder.Copilot\DesktopComputerUse.ProfileBuilder.Copilot.csproj", "{EEAFAD19-7A8B-41D7-B997-60A695463825}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DesktopComputerUse.Native.Tests", "tests\DesktopComputerUse.Native.Tests\DesktopComputerUse.Native.Tests.csproj", "{9AD24276-EDA0-4A70-B738-C6159C1F6DD4}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DesktopComputerUse.Server.Linux.Tests", "tests\DesktopComputerUse.Server.Linux.Tests\DesktopComputerUse.Server.Linux.Tests.csproj", "{CE791C17-867C-4A72-9FBD-F986AE5F58CF}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -88,6 +92,14 @@ Global
 		{EEAFAD19-7A8B-41D7-B997-60A695463825}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{EEAFAD19-7A8B-41D7-B997-60A695463825}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{EEAFAD19-7A8B-41D7-B997-60A695463825}.Release|Any CPU.Build.0 = Release|Any CPU
+		{9AD24276-EDA0-4A70-B738-C6159C1F6DD4}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{9AD24276-EDA0-4A70-B738-C6159C1F6DD4}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{9AD24276-EDA0-4A70-B738-C6159C1F6DD4}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{9AD24276-EDA0-4A70-B738-C6159C1F6DD4}.Release|Any CPU.Build.0 = Release|Any CPU
+		{CE791C17-867C-4A72-9FBD-F986AE5F58CF}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{CE791C17-867C-4A72-9FBD-F986AE5F58CF}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{CE791C17-867C-4A72-9FBD-F986AE5F58CF}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{CE791C17-867C-4A72-9FBD-F986AE5F58CF}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(NestedProjects) = preSolution
 		{7372C53F-6770-4969-BB44-A53D0560E6B5} = {733E37AF-5B3E-4DD4-9B55-8CBFC723D802}
@@ -102,5 +114,7 @@ Global
 		{A4ACF33B-5E15-4B77-B9A6-5A5EC3BB109B} = {733E37AF-5B3E-4DD4-9B55-8CBFC723D802}
 		{13FB3483-57F4-4C39-92BB-AE668E3AA693} = {0D43B63C-F91B-4664-B6A0-F3A599492624}
 		{EEAFAD19-7A8B-41D7-B997-60A695463825} = {733E37AF-5B3E-4DD4-9B55-8CBFC723D802}
+		{9AD24276-EDA0-4A70-B738-C6159C1F6DD4} = {0D43B63C-F91B-4664-B6A0-F3A599492624}
+		{CE791C17-867C-4A72-9FBD-F986AE5F58CF} = {0D43B63C-F91B-4664-B6A0-F3A599492624}
 	EndGlobalSection
 EndGlobal

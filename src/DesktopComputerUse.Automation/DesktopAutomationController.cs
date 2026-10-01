@@ -1,6 +1,5 @@
 using System.Diagnostics;
-using System.Drawing;
-using System.Drawing.Imaging;
+using System.Runtime.CompilerServices;
 using System.Text.RegularExpressions;
 using DesktopComputerUse.Automation.Applications;
 using DesktopComputerUse.Automation.Discovery;
@@ -14,14 +13,13 @@ using DesktopComputerUse.Contracts.Discovery;
 using DesktopComputerUse.Contracts.Resolution;
 using DesktopComputerUse.Contracts.Profiles;
 using FlaUI.Core.AutomationElements;
-using FlaUI.Core.Capturing;
 using FlaUI.Core.Definitions;
 using Microsoft.Extensions.Logging;
 using FlaApplication = FlaUI.Core.Application;
 
 namespace DesktopComputerUse.Automation;
 
-public sealed class DesktopAutomationController : IAsyncDisposable
+public sealed partial class DesktopAutomationController : IAsyncDisposable
 {
     private static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(10);
 
@@ -35,6 +33,7 @@ public sealed class DesktopAutomationController : IAsyncDisposable
     private readonly ILogger<DesktopAutomationController> _logger;
 
     private AutomationSession? _session;
+    private Process? _ownedProcess;
     private readonly Dictionary<string, ProfileUpdateProposal> _profileUpdateProposals =
         new(StringComparer.Ordinal);
 
@@ -63,6 +62,12 @@ public sealed class DesktopAutomationController : IAsyncDisposable
     public Task<AutomationResult<ApplicationState>> LaunchAsync(
         string profileId,
         CancellationToken cancellationToken)
+        => LaunchAsync(profileId, LaunchPolicy.Fail, cancellationToken);
+
+    public Task<AutomationResult<ApplicationState>> LaunchAsync(
+        string profileId,
+        LaunchPolicy launchPolicy,
+        CancellationToken cancellationToken)
     {
         if (!_profiles.TryGet(profileId, out var profile))
         {
@@ -74,32 +79,74 @@ public sealed class DesktopAutomationController : IAsyncDisposable
         return ExecuteAsync(
             profile,
             cancellationToken,
-            token =>
-            {
-                EnsureWindows();
-                EnsureNoSession();
-                EnsureExecutableExists(profile);
-
-                var startInfo = new ProcessStartInfo
-                {
-                    FileName = profile.ExecutablePath,
-                    Arguments = profile.Arguments ?? string.Empty,
-                    WorkingDirectory = profile.WorkingDirectory
-                        ?? Path.GetDirectoryName(profile.ExecutablePath)
-                        ?? Environment.CurrentDirectory,
-                    UseShellExecute = false
-                };
-
-                var application = FlaApplication.Launch(startInfo);
-                var automation = _automationFactory.Create(profile.Backend);
-                return StartSession(
-                    profile,
-                    application,
-                    automation,
-                    ownsProcess: true,
-                    token);
-            });
+            token => LaunchOrAttachSession(profile, launchPolicy, token, cancellationToken));
     }
+
+    private ApplicationState LaunchOrAttachSession(
+        ApplicationProfile profile,
+        LaunchPolicy launchPolicy,
+        CancellationToken token,
+        CancellationToken callerToken)
+    {
+        EnsureWindows();
+        EnsureNoLaunchSession();
+        EnsureExecutableExists(profile);
+        token.ThrowIfCancellationRequested();
+        var matches = ProcessLifecycle.FindMatchingProcesses(profile.ExecutablePath);
+        var existingProcessId = ProcessLifecycle.SelectExistingProcess(
+            launchPolicy, profile.AllowMultipleInstances, matches);
+        if (existingProcessId is int existingId)
+        {
+            VerifyProcess(profile, existingId);
+            return StartSession(profile, existingId, null, token, callerToken);
+        }
+        token.ThrowIfCancellationRequested();
+        var process = SpawnOwnedProcess(profile, callerToken);
+        return StartSession(profile, process.Id, process, token, callerToken);
+    }
+
+    private Process SpawnOwnedProcess(ApplicationProfile profile, CancellationToken callerToken)
+    {
+        try
+        {
+            return Process.Start(CreateProcessStartInfo(profile))
+                ?? throw new AutomationOperationException(
+                    AutomationErrorCode.AutomationFailure,
+                    "The application process could not be started.");
+        }
+        catch (Exception exception)
+        {
+            _logger.LogError(exception, "Failed to spawn application profile {ProfileId}.", profile.Id);
+            var original = AutomationExceptionResultMapper.Map<ApplicationState>(
+                exception, callerToken.IsCancellationRequested).Error!;
+            throw new AutomationOperationException(
+                original.Code,
+                original.Message,
+                original.Candidates,
+                original.Diagnostic! with
+                {
+                    Operation = "launch",
+                    Phase = "spawn",
+                    ProfileId = profile.Id,
+                    CleanupOutcome = "notSpawned"
+                },
+                original.Failures);
+        }
+    }
+
+    private static ProcessStartInfo CreateProcessStartInfo(ApplicationProfile profile)
+        => new()
+        {
+            FileName = profile.ExecutablePath,
+            Arguments = profile.Arguments ?? string.Empty,
+            WorkingDirectory = GetWorkingDirectory(profile),
+            UseShellExecute = false
+        };
+
+    private static string GetWorkingDirectory(ApplicationProfile profile)
+        => profile.WorkingDirectory
+            ?? Path.GetDirectoryName(profile.ExecutablePath)
+            ?? Environment.CurrentDirectory;
 
     public Task<AutomationResult<ApplicationState>> AttachAsync(
         string profileId,
@@ -122,14 +169,7 @@ public sealed class DesktopAutomationController : IAsyncDisposable
                 EnsureNoSession();
                 VerifyProcess(profile, processId);
 
-                var application = FlaApplication.Attach(processId);
-                var automation = _automationFactory.Create(profile.Backend);
-                return StartSession(
-                    profile,
-                    application,
-                    automation,
-                    ownsProcess: false,
-                    token);
+                return StartSession(profile, processId, null, token, cancellationToken);
             });
     }
 
@@ -148,11 +188,29 @@ public sealed class DesktopAutomationController : IAsyncDisposable
                 var profileId = session.Profile.Id;
                 var processId = session.Application.ProcessId;
 
-                CloseOwnedProcess(session, terminateOwnedProcess);
-
-                session.Dispose();
+                InvalidateCaptures(session);
+                var cleanup = CloseOwnedProcess(session, terminateOwnedProcess);
+                var failures = new List<AutomationDiagnostic>(cleanup.Failures);
+                DisposeSessionResource(session.Automation, processId, "disposeAutomation", failures);
+                DisposeSessionResource(session.Application, processId, "disposeApplication", failures);
+                DisposeSessionResource(_ownedProcess, processId, "disposeProcessHandle", failures);
+                _ownedProcess = null;
                 _session = null;
                 _profileUpdateProposals.Clear();
+                if (ProcessLifecycle.HasCleanupFailures(cleanup with { Failures = failures }))
+                {
+                    throw new AutomationOperationException(
+                        AutomationErrorCode.AutomationFailure,
+                        "The session was detached, but process cleanup or resource disposal failed.",
+                        diagnostic: new AutomationDiagnostic
+                        {
+                            Code = AutomationErrorCode.AutomationFailure,
+                            Operation = "detach",
+                            ProcessId = processId,
+                            CleanupOutcome = cleanup.Outcome
+                        },
+                        failures: failures);
+                }
                 LogAudit("detach", profileId, processId, succeeded: true);
                 return AutomationResult.Success();
             });
@@ -160,65 +218,152 @@ public sealed class DesktopAutomationController : IAsyncDisposable
 
     private ApplicationState StartSession(
         ApplicationProfile profile,
-        FlaApplication application,
-        FlaUI.Core.AutomationBase automation,
-        bool ownsProcess,
-        CancellationToken cancellationToken)
+        int processId,
+        Process? ownedProcess,
+        CancellationToken cancellationToken,
+        CancellationToken callerCancellationToken)
     {
+        FlaApplication? application = null;
+        FlaUI.Core.AutomationBase? automation = null;
+        var ownsProcess = ownedProcess is not null;
         try
         {
+            cancellationToken.ThrowIfCancellationRequested();
+            application = FlaApplication.Attach(processId);
+            automation = _automationFactory.Create(profile.Backend);
             var window = WaitForMainWindow(
                 application,
                 automation,
                 profile,
                 cancellationToken);
-            _session = new AutomationSession(
+            cancellationToken.ThrowIfCancellationRequested();
+            var session = new AutomationSession(
                 profile,
                 application,
                 automation,
                 window,
-                ownsProcess);
+                ownsProcess: ownsProcess);
+            var state = BuildApplicationState(session);
             LogAudit(
-                ownsProcess ? "launch" : "attach",
+                OwnershipAction(ownsProcess),
                 profile.Id,
                 application.ProcessId,
                 succeeded: true);
-            return BuildApplicationState(_session);
+            _session = session;
+            _ownedProcess = ownedProcess;
+            return state;
         }
-        catch
+        catch (Exception exception)
         {
-            CleanupFailedSession(application, automation, ownsProcess);
-            throw;
+            var cleanup = CleanupFailedSession(application, automation, ownedProcess, processId);
+            _logger.LogError(
+                exception,
+                "Failed to start profile {ProfileId}; spawned/attached PID {ProcessId}; cleanup {CleanupOutcome}.",
+                profile.Id,
+                processId,
+                cleanup.Outcome);
+            throw ProcessLifecycle.StartupFailure(
+                exception,
+                callerCancellationToken.IsCancellationRequested,
+                profile.Id,
+                processId,
+                ownsProcess,
+                cleanup);
         }
     }
 
-    private static void CleanupFailedSession(
-        FlaApplication application,
-        FlaUI.Core.AutomationBase automation,
-        bool ownsProcess)
+    private static string OwnershipAction(bool ownsProcess) => ownsProcess ? "launch" : "attach";
+
+    private ProcessCleanupResult CleanupFailedSession(
+        FlaApplication? application,
+        FlaUI.Core.AutomationBase? automation,
+        Process? ownedProcess,
+        int processId)
     {
-        automation.Dispose();
-        if (ownsProcess && !application.HasExited)
-        {
-            application.Close(killIfCloseFails: false);
-        }
-
-        application.Dispose();
+        var cleanup = ownedProcess is null
+            ? new ProcessCleanupResult(processId, "notOwned", [])
+            : ProcessLifecycle.CleanupOwnedProcess(
+                ownedProcess,
+                TimeSpan.FromSeconds(2),
+                TimeSpan.FromSeconds(2));
+        var failures = cleanup.Failures.ToList();
+        ReportCleanup(cleanup);
+        DisposeSessionResource(automation, processId, "disposeAutomation", failures);
+        DisposeSessionResource(application, processId, "disposeApplication", failures);
+        DisposeSessionResource(ownedProcess, processId, "disposeProcessHandle", failures);
+        return cleanup with { Failures = failures };
     }
 
-    private static void CloseOwnedProcess(
+    private void DisposeSessionResource(
+        IDisposable? resource,
+        int processId,
+        string phase,
+        List<AutomationDiagnostic> failures)
+    {
+        try
+        {
+            resource?.Dispose();
+        }
+        catch (Exception exception)
+        {
+            _logger.LogWarning(exception, "Failed session resource cleanup {Phase} for PID {ProcessId}.", phase, processId);
+            failures.Add(AutomationExceptionResultMapper.CreateDiagnostic(exception) with
+            {
+                Operation = "cleanup",
+                Phase = phase,
+                ProcessId = processId
+            });
+        }
+    }
+
+    private void ReportCleanup(ProcessCleanupResult cleanup)
+    {
+        _logger.LogInformation(
+            "Process cleanup for PID {ProcessId}: {CleanupOutcome}.",
+            cleanup.ProcessId,
+            cleanup.Outcome);
+        foreach (var failure in cleanup.Failures)
+            _logger.LogWarning(
+                "Process cleanup failure for PID {ProcessId}: phase {Phase}, exception {ExceptionType}, HRESULT {HResult}.",
+                cleanup.ProcessId,
+                failure.Phase,
+                failure.ExceptionType,
+                failure.HResult);
+    }
+
+    private ProcessCleanupResult CloseOwnedProcess(
         AutomationSession session,
         bool terminateOwnedProcess)
     {
-        if (new[]
+        if (!ProcessLifecycle.ShouldTerminateProcess(
+                terminateOwnedProcess, session.OwnsProcess, _ownedProcess is not null))
+            return new(session.Application.ProcessId, "notRequested", []);
+        var cleanup = ProcessLifecycle.CleanupOwnedProcess(
+            _ownedProcess!,
+            TimeSpan.FromSeconds(2),
+            TimeSpan.FromSeconds(2));
+        ReportCleanup(cleanup);
+        return cleanup;
+    }
+
+    private void EnsureNoLaunchSession()
+    {
+        if (_session is null)
+            return;
+        throw new AutomationOperationException(
+            AutomationErrorCode.ApplicationAlreadyAttached,
+            "An application session is already active. Detach it before launching or attaching another application.",
+            diagnostic: new AutomationDiagnostic
             {
-                terminateOwnedProcess,
-                session.OwnsProcess,
-                !session.Application.HasExited
-            }.All(value => value))
-        {
-            session.Application.Close(killIfCloseFails: false);
-        }
+                Code = AutomationErrorCode.ApplicationAlreadyAttached,
+                Operation = "launch",
+                Phase = "checkActiveSession",
+                ProcessId = _session.Application.ProcessId,
+                MatchingProcesses =
+                [
+                    new(_session.Application.ProcessId, _session.Profile.ExecutablePath, null)
+                ]
+            });
     }
 
     public Task<AutomationResult<ApplicationState>> GetApplicationStateAsync(
@@ -232,10 +377,10 @@ public sealed class DesktopAutomationController : IAsyncDisposable
         CancellationToken cancellationToken)
         => ExecuteWithSessionAsync(
             cancellationToken,
-            (session, _) =>
+            (session, token) =>
             {
-                var element = ResolveSingle(session, selector);
-                return _observer.Observe(element, session.Profile);
+                var matches = FindMatches(session, selector, token);
+                return ObserveResolvedControl(session, matches, UniqueElement(session, matches));
             });
 
     public Task<AutomationResult<ControlSummary>> GetControlPropertiesAsync(
@@ -251,16 +396,24 @@ public sealed class DesktopAutomationController : IAsyncDisposable
             cancellationToken,
             (session, token) =>
             {
-                var root = rootSelector is null
-                    ? session.MainWindow
-                    : ResolveSingle(session, rootSelector);
+                var root = ResolveInspectionRoot(session, rootSelector, token);
                 var depth = Math.Clamp(
                     maxDepth ?? session.Profile.MaxTreeDepth,
                     1,
                     session.Profile.MaxTreeDepth);
-                var remaining = session.Profile.MaxResults;
-                return BuildTree(root, session.Profile, depth, ref remaining, token);
+                var tree = _observer.Inspect(root, session.Profile, depth - 1, session.Profile.MaxResults, token);
+                return ApplyNativeInspectionRoot(tree, root, session);
             });
+
+    private AutomationElement ResolveInspectionRoot(
+        AutomationSession session, ControlSelector? selector, CancellationToken token)
+        => selector is null ? session.MainWindow : ResolveSingle(session, selector, token);
+
+    private ControlTreeNode ApplyNativeInspectionRoot(
+        ControlTreeNode tree, AutomationElement root, AutomationSession session)
+        => ReferenceEquals(root, session.MainWindow)
+            ? tree with { Control = tree.Control with { Bounds = NativeRootBounds(session) } }
+            : tree;
 
     public Task<AutomationResult<ApplicationSnapshot>> SnapshotApplicationAsync(
         int? maxDepth,
@@ -268,17 +421,26 @@ public sealed class DesktopAutomationController : IAsyncDisposable
         CancellationToken cancellationToken)
         => ExecuteWithSessionAsync(
             cancellationToken,
-            (session, token) => _snapshotBuilder.Build(
-                session,
-                Math.Clamp(
-                    maxDepth ?? session.Profile.MaxTreeDepth,
-                    1,
-                    session.Profile.MaxTreeDepth),
-                Math.Clamp(
-                    maxResults ?? session.Profile.MaxResults,
-                    1,
-                    session.Profile.MaxResults),
-                token));
+            (session, token) =>
+            {
+                var snapshot = _snapshotBuilder.Build(
+                    session,
+                    Math.Clamp(maxDepth ?? session.Profile.MaxTreeDepth, 1, session.Profile.MaxTreeDepth),
+                    Math.Clamp(maxResults ?? session.Profile.MaxResults, 1, session.Profile.MaxResults),
+                    token);
+                var bounds = NativeRootBounds(session);
+                return snapshot with
+                {
+                    Window = snapshot.Window with
+                    {
+                        Bounds = bounds,
+                        Controls = snapshot.Window.Controls.Select(control =>
+                            control.CandidateId == snapshot.Window.CandidateId
+                                ? control with { Bounds = bounds }
+                                : control).ToArray()
+                    }
+                };
+            });
 
     public Task<AutomationResult<ControlResolutionResult>> ResolveControlIntentAsync(
         string semanticKey,
@@ -516,11 +678,11 @@ public sealed class DesktopAutomationController : IAsyncDisposable
             cancellationToken.ThrowIfCancellationRequested();
             var element = GetSingleMatchOrThrow(
                 session,
-                FindMatches(session, selector));
+                FindMatches(session, selector, cancellationToken));
             var summary = ObserveControl(element, session.Profile);
             if (WaitConditionEvaluator.Matches(summary, condition))
             {
-                return summary ?? MissingControlSummary();
+                return WaitResult(summary);
             }
 
             cancellationToken.WaitHandle.WaitOne(session.Profile.PollIntervalMs);
@@ -531,6 +693,8 @@ public sealed class DesktopAutomationController : IAsyncDisposable
             $"The requested control state was not observed within {requestedTimeout.TotalMilliseconds:0} milliseconds.");
     }
 
+    private static ControlSummary WaitResult(ControlSummary? summary) => summary ?? MissingControlSummary();
+
     private ControlSummary? ObserveControl(
         AutomationElement? element,
         ApplicationProfile profile)
@@ -540,30 +704,14 @@ public sealed class DesktopAutomationController : IAsyncDisposable
         CancellationToken cancellationToken)
         => ExecuteWithSessionAsync(
             cancellationToken,
-            (session, _) =>
-            {
-                return CaptureRedactedElement(
-                    session.MainWindow,
-                    session.Profile);
-            });
+            (session, token) => CaptureWindowResult(session, token));
 
     public Task<AutomationResult<WindowCapture>> CaptureControlImageAsync(
         ControlSelector selector,
         CancellationToken cancellationToken)
         => ExecuteWithSessionAsync(
             cancellationToken,
-            (session, _) =>
-            {
-                var element = ResolveSingle(session, selector);
-                if (IsSensitiveElement(element, session.Profile))
-                {
-                    throw new AutomationOperationException(
-                        AutomationErrorCode.ApplicationNotAllowed,
-                        "Capturing a password or sensitive control is not permitted.");
-                }
-
-                return CaptureRedactedElement(element, session.Profile);
-            });
+            (session, token) => CaptureControlResult(session, selector, token));
 
     public async ValueTask DisposeAsync()
     {
@@ -572,8 +720,14 @@ public sealed class DesktopAutomationController : IAsyncDisposable
             await _worker.RunAsync(
                 _ =>
                 {
+                    if (_session is not null)
+                    {
+                        InvalidateCaptures(_session);
+                    }
                     _session?.Dispose();
                     _session = null;
+                    _ownedProcess?.Dispose();
+                    _ownedProcess = null;
                     return true;
                 },
                 TimeSpan.FromSeconds(5),
@@ -597,22 +751,13 @@ public sealed class DesktopAutomationController : IAsyncDisposable
             (session, token) =>
             {
                 token.ThrowIfCancellationRequested();
-                var element = ResolveSingle(session, selector);
-                var before = _observer.Observe(element, session.Profile);
+                var element = ResolveSingle(session, selector, token);
                 action(element);
                 token.ThrowIfCancellationRequested();
 
-                ControlSummary observed;
-                try
-                {
-                    observed = _observer.Observe(
-                        ResolveSingle(session, selector),
-                        session.Profile);
-                }
-                catch (AutomationOperationException)
-                {
-                    observed = before;
-                }
+                var observed = _observer.Observe(
+                    ResolveSingle(session, selector, token),
+                    session.Profile);
 
                 LogAudit(
                     actionName,
@@ -629,7 +774,8 @@ public sealed class DesktopAutomationController : IAsyncDisposable
 
     private Task<AutomationResult<T>> ExecuteWithSessionAsync<T>(
         CancellationToken cancellationToken,
-        Func<AutomationSession, CancellationToken, T> action)
+        Func<AutomationSession, CancellationToken, T> action,
+        [CallerMemberName] string operation = "")
         => ExecuteAsync(
             GetSessionTimeout(),
             cancellationToken,
@@ -638,21 +784,23 @@ public sealed class DesktopAutomationController : IAsyncDisposable
                 var session = GetSession();
                 EnsureProcessAlive(session);
                 return action(session, token);
-            });
+            }, operation);
 
     private Task<AutomationResult<T>> ExecuteAsync<T>(
         ApplicationProfile profile,
         CancellationToken cancellationToken,
-        Func<CancellationToken, T> action)
+        Func<CancellationToken, T> action,
+        [CallerMemberName] string operation = "")
         => ExecuteAsync(
             TimeSpan.FromMilliseconds(profile.OperationTimeoutMs),
             cancellationToken,
-            action);
+            action, operation);
 
     private async Task<AutomationResult<T>> ExecuteAsync<T>(
         TimeSpan timeout,
         CancellationToken cancellationToken,
-        Func<CancellationToken, T> action)
+        Func<CancellationToken, T> action,
+        [CallerMemberName] string operation = "")
     {
         try
         {
@@ -662,60 +810,126 @@ public sealed class DesktopAutomationController : IAsyncDisposable
         catch (Exception exception)
         {
             _logger.LogError(exception, "Unexpected automation failure.");
-            return AutomationExceptionResultMapper.Map<T>(
+            var result = AutomationExceptionResultMapper.Map<T>(
                 exception,
                 cancellationToken.IsCancellationRequested);
+            return AddFailureContext(result, operation);
         }
     }
 
     private async Task<AutomationResult> ExecuteAsync(
         TimeSpan timeout,
         CancellationToken cancellationToken,
-        Func<CancellationToken, AutomationResult> action)
+        Func<CancellationToken, AutomationResult> action,
+        [CallerMemberName] string operation = "")
     {
         var result = await ExecuteAsync<AutomationResult>(
             timeout,
             cancellationToken,
-            action);
+            action, operation);
         return result.Succeeded
             ? result.Value!
-            : AutomationResult.Failure(
-                result.Error!.Code,
-                result.Error.Message);
+            : new AutomationResult(false, result.Error);
+    }
+
+    private AutomationResult<T> AddFailureContext<T>(AutomationResult<T> result, string operation)
+    {
+        var error = result.Error!;
+        var diagnostic = error.Diagnostic ?? new AutomationDiagnostic { Code = error.Code };
+        return result with
+        {
+            Error = error with
+            {
+                Diagnostic = diagnostic with
+                {
+                    Operation = diagnostic.Operation ?? operation,
+                    Phase = diagnostic.Phase ?? "execute",
+                    ProfileId = diagnostic.ProfileId ?? _session?.Profile.Id,
+                    ProfileRevision = diagnostic.ProfileRevision ?? _session?.Profile.Metadata?.Revision,
+                    ProcessId = diagnostic.ProcessId ?? _session?.Application.ProcessId,
+                    Hwnd = diagnostic.Hwnd ?? _session?.NativeWindowHandle
+                }
+            }
+        };
     }
 
     private AutomationElement ResolveSingle(
         AutomationSession session,
-        ControlSelector selector)
-    {
-        var matches = FindMatches(session, selector);
+        ControlSelector selector,
+        CancellationToken cancellationToken = default)
+        => UniqueElement(session, FindMatches(session, selector, cancellationToken));
 
-        return matches.Count switch
+    private AutomationElement UniqueElement(AutomationSession session, IReadOnlyList<AutomationElement> matches)
+    {
+        if (matches.Count == 0)
         {
-            0 => throw new AutomationOperationException(
+            throw new AutomationOperationException(
                 AutomationErrorCode.ControlNotFound,
-                "No control matched the selector within the attached application window."),
-            1 => matches[0],
-            _ => throw Ambiguous(session, matches)
-        };
+                "No control matched the selector within the attached application window.");
+        }
+
+        if (matches.Count > 1)
+        {
+            throw Ambiguous(session, matches);
+        }
+
+        return matches[0];
+    }
+
+    private ControlSummary ObserveResolvedControl(
+        AutomationSession session, IReadOnlyList<AutomationElement> matches, AutomationElement element)
+    {
+        var summary = _observer.Observe(element, session.Profile);
+        var searchFailures = (matches as ControlSelectorMatchResult)?.Failures ?? [];
+        summary = summary with { Failures = summary.Failures.Concat(searchFailures).Take(100).ToArray() };
+        return ReferenceEquals(element, session.MainWindow)
+            ? summary with { Bounds = NativeRootBounds(session) }
+            : summary;
     }
 
     private IReadOnlyList<AutomationElement> FindMatches(
         AutomationSession session,
-        ControlSelector selector)
+        ControlSelector selector,
+        CancellationToken cancellationToken = default)
     {
         var matchSets = _selectorResolver
             .ExpandSemanticSelectors(session.Profile, selector)
-            .Select(expanded => _selectorResolver.FindMatches(
+            .Select(expanded => _selectorResolver.FindMatchesWithDiagnostics(
                 session.MainWindow,
                 expanded,
                 session.Profile.MaxResults,
-                session.Profile.MaxTreeDepth))
+                session.Profile.MaxTreeDepth,
+                cancellationToken: cancellationToken))
             .ToArray();
-        return matchSets.FirstOrDefault(matches => matches.Count == 1)
-            ?? matchSets.FirstOrDefault(matches => matches.Count > 1)
-            ?? [];
+        var selected = SelectMatchSet(matchSets);
+        if (selected is not null)
+        {
+            selected.EnsureCompleteForAction();
+            return selected;
+        }
+
+        ThrowIfSearchIncomplete(matchSets);
+        return [];
     }
+
+    private static ControlSelectorMatchResult? SelectMatchSet(IReadOnlyList<ControlSelectorMatchResult> matchSets)
+        => matchSets.FirstOrDefault(matches => CompleteUniqueMatch(matches.Count, matches.Truncated))
+            ?? matchSets.FirstOrDefault(matches => matches.Count > 1);
+
+    internal static bool CompleteUniqueMatch(int count, bool truncated) => count == 1 && !truncated;
+
+    private static void ThrowIfSearchIncomplete(IReadOnlyList<ControlSelectorMatchResult> matchSets)
+    {
+        var failures = matchSets.SelectMany(matches => matches.Failures).Take(100).ToArray();
+        if (SearchIncomplete(failures.Length, matchSets.Any(matches => matches.Truncated)))
+        {
+            throw new AutomationOperationException(AutomationErrorCode.ProviderFailure,
+                "Selector resolution was incomplete. Inspect the partial diagnostics or use qualified native fallback.",
+                failures: failures);
+        }
+    }
+
+    internal static bool SearchIncomplete(int failedCount, bool truncated) => failedCount != 0 || truncated;
 
     private AutomationOperationException Ambiguous(
         AutomationSession session,
@@ -738,58 +952,6 @@ public sealed class DesktopAutomationController : IAsyncDisposable
         }
 
         return matches.SingleOrDefault();
-    }
-
-    private ControlTreeNode BuildTree(
-        AutomationElement element,
-        ApplicationProfile profile,
-        int depth,
-        ref int remaining,
-        CancellationToken cancellationToken)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-        if (remaining <= 0)
-        {
-            throw new AutomationOperationException(
-                AutomationErrorCode.AutomationFailure,
-                $"Control inspection exceeded the profile limit of {profile.MaxResults} elements.");
-        }
-
-        remaining--;
-        if (depth <= 1)
-        {
-            return new ControlTreeNode(_observer.Observe(element, profile), []);
-        }
-
-        var children = BuildChildren(
-            element,
-            profile,
-            depth,
-            ref remaining,
-            cancellationToken);
-
-        return new ControlTreeNode(_observer.Observe(element, profile), children);
-    }
-
-    private IReadOnlyList<ControlTreeNode> BuildChildren(
-        AutomationElement element,
-        ApplicationProfile profile,
-        int depth,
-        ref int remaining,
-        CancellationToken cancellationToken)
-    {
-        var children = new List<ControlTreeNode>();
-        foreach (var child in element.FindAllChildren().Take(remaining))
-        {
-            children.Add(BuildTree(
-                child,
-                profile,
-                depth - 1,
-                ref remaining,
-                cancellationToken));
-        }
-
-        return children;
     }
 
     private static ControlSummary MissingControlSummary()
@@ -863,15 +1025,26 @@ public sealed class DesktopAutomationController : IAsyncDisposable
         }
     }
 
-    private static ApplicationState BuildApplicationState(AutomationSession session)
+    private ApplicationState BuildApplicationState(AutomationSession session)
         => new(
             session.Profile.Id,
             session.Application.ProcessId,
             session.Profile.ExecutablePath,
             session.OwnsProcess,
             session.Application.HasExited,
-            session.Application.HasExited ? null : session.MainWindow.Title,
-            session.Profile.Backend);
+            session.Application.HasExited ? null : _observer.Observe(session.MainWindow, session.Profile).Name,
+            session.Profile.Backend)
+        {
+            ProfileRevision = session.Profile.Metadata?.Revision,
+            ProfileGeneration = LoadedGeneration(session.Profile),
+            ProfileIsStale = SessionProfileIsStale(session.Profile),
+            SessionId = session.SessionId
+        };
+
+    private static long LoadedGeneration(ApplicationProfile profile) => profile.Metadata?.Generation ?? 0;
+
+    private bool SessionProfileIsStale(ApplicationProfile profile)
+        => (_profiles as IReloadableApplicationProfileStore)?.IsStale(profile) ?? false;
 
     private static void VerifyProcess(ApplicationProfile profile, int processId)
     {
@@ -935,7 +1108,7 @@ public sealed class DesktopAutomationController : IAsyncDisposable
             cancellationToken.ThrowIfCancellationRequested();
             ThrowIfExitedBeforeWindow(application);
             var matchingWindow = FindMainWindow(application, automation, profile);
-            if (matchingWindow is not null)
+            if (WindowAvailable(matchingWindow))
             {
                 return matchingWindow;
             }
@@ -947,6 +1120,9 @@ public sealed class DesktopAutomationController : IAsyncDisposable
             AutomationErrorCode.WindowNotFound,
             $"No top-level window matched profile '{profile.Id}'.");
     }
+
+    private static bool WindowAvailable(
+        [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] Window? window) => window is not null;
 
     private static void ThrowIfExitedBeforeWindow(FlaApplication application)
     {
@@ -983,81 +1159,12 @@ public sealed class DesktopAutomationController : IAsyncDisposable
             succeeded,
             target ?? "-");
 
-    private static string DescribeSelector(ControlSelector selector)
+    internal static string DescribeSelector(ControlSelector selector)
         => selector.SemanticKey
             ?? selector.AutomationId
             ?? selector.Name
             ?? selector.ControlType
             ?? "unspecified";
-
-    private static WindowCapture CaptureRedactedElement(
-        AutomationElement element,
-        ApplicationProfile profile)
-    {
-        if (!profile.EnableScreenshots)
-        {
-            throw new AutomationOperationException(
-                AutomationErrorCode.ApplicationNotAllowed,
-                "Image capture is disabled by the application profile.");
-        }
-
-        using var capture = FlaUI.Core.Capturing.Capture.Element(element);
-        RedactSensitiveDescendants(
-            capture.Bitmap,
-            element,
-            profile);
-        using var stream = new MemoryStream();
-        capture.Bitmap.Save(stream, ImageFormat.Png);
-        return new WindowCapture(
-            "image/png",
-            Convert.ToBase64String(stream.ToArray()),
-            capture.Bitmap.Width,
-            capture.Bitmap.Height);
-    }
-
-    private static void RedactSensitiveDescendants(
-        Bitmap bitmap,
-        AutomationElement root,
-        ApplicationProfile profile)
-    {
-        var rootBounds = root.BoundingRectangle;
-        using var graphics = Graphics.FromImage(bitmap);
-        foreach (var descendant in root.FindAllDescendants())
-        {
-            RedactSensitiveElement(
-                graphics,
-                bitmap.Size,
-                rootBounds,
-                descendant,
-                profile);
-        }
-    }
-
-    private static void RedactSensitiveElement(
-        Graphics graphics,
-        Size bitmapSize,
-        Rectangle rootBounds,
-        AutomationElement element,
-        ApplicationProfile profile)
-    {
-        if (!IsSensitiveElement(element, profile))
-        {
-            return;
-        }
-
-        var bounds = element.BoundingRectangle;
-        var rectangle = Rectangle.Intersect(
-            new Rectangle(
-                bounds.X - rootBounds.X,
-                bounds.Y - rootBounds.Y,
-                bounds.Width,
-                bounds.Height),
-            new Rectangle(Point.Empty, bitmapSize));
-        if (!rectangle.IsEmpty)
-        {
-            graphics.FillRectangle(Brushes.Black, rectangle);
-        }
-    }
 
     private static bool IsSensitiveElement(
         AutomationElement element,
@@ -1069,11 +1176,13 @@ public sealed class DesktopAutomationController : IAsyncDisposable
     {
         try
         {
-            return element.Properties.IsPassword.ValueOrDefault;
+            return element.Properties.IsPassword.Value;
         }
-        catch
+        catch (Exception exception)
         {
-            return false;
+            throw new AutomationOperationException(
+                AutomationErrorCode.ApplicationNotAllowed,
+                $"Capture refused because password sensitivity could not be determined ({exception.GetType().Name}).");
         }
     }
 
@@ -1086,9 +1195,11 @@ public sealed class DesktopAutomationController : IAsyncDisposable
             return !string.IsNullOrWhiteSpace(element.AutomationId) &&
                 profile.SensitiveAutomationIds.Contains(element.AutomationId);
         }
-        catch
+        catch (Exception exception)
         {
-            return false;
+            throw new AutomationOperationException(
+                AutomationErrorCode.ApplicationNotAllowed,
+                $"Capture refused because sensitive control identity could not be determined ({exception.GetType().Name}).");
         }
     }
 

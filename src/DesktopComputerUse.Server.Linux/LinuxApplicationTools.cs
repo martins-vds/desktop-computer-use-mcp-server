@@ -16,7 +16,10 @@ public sealed class LinuxApplicationTools
 
     [McpServerTool(Name = "launch_application", UseStructuredContent = true)]
     [Description("Returns a platform error because Windows Forms automation is unavailable on Linux.")]
-    public static AutomationResult<ApplicationState> LaunchApplication(string profileId)
+    public static AutomationResult<ApplicationState> LaunchApplication(
+        string profileId,
+        string ifAlreadyRunning = "fail",
+        string onLaunchFailure = "terminateSpawned")
         => Unsupported<ApplicationState>();
 
     [McpServerTool(Name = "attach_application", UseStructuredContent = true)]

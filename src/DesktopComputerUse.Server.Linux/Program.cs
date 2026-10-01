@@ -25,6 +25,7 @@ builder.Services
     .AddMcpServer()
     .WithStdioServerTransport()
     .WithTools<LinuxApplicationTools>()
-    .WithTools<LinuxControlTools>();
+    .WithTools<LinuxControlTools>()
+    .WithTools<LinuxNativeTools>();
 
 await builder.Build().RunAsync();

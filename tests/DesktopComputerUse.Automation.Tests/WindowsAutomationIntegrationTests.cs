@@ -4,6 +4,7 @@ using DesktopComputerUse.Automation.FlaUi;
 using DesktopComputerUse.Automation.Resolution;
 using DesktopComputerUse.Automation.Selectors;
 using DesktopComputerUse.Automation.Threading;
+using DesktopComputerUse.Automation.Windows;
 using DesktopComputerUse.Contracts.Automation;
 using DesktopComputerUse.Contracts.Configuration;
 using DesktopComputerUse.Contracts.Profiles;
@@ -28,6 +29,8 @@ public sealed class WindowsAutomationIntegrationTests
         {
             return;
         }
+
+        Win32DesktopApi.InitializePerMonitorV2();
 
         var profile = TestProfile.Create("test-app", executablePath) with
         {

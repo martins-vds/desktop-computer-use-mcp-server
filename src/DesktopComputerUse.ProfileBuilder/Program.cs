@@ -8,12 +8,18 @@ using DesktopComputerUse.Automation.Profiles;
 using DesktopComputerUse.Automation.Resolution;
 using DesktopComputerUse.Automation.Selectors;
 using DesktopComputerUse.Automation.Threading;
+using DesktopComputerUse.Automation.Windows;
 using DesktopComputerUse.Contracts.Automation;
 using DesktopComputerUse.Contracts.Configuration;
 using DesktopComputerUse.Contracts.Discovery;
 using DesktopComputerUse.Contracts.Profiles;
 using DesktopComputerUse.Contracts.Resolution;
 using Microsoft.Extensions.Logging;
+
+if (OperatingSystem.IsWindows())
+{
+    Win32DesktopApi.InitializePerMonitorV2();
+}
 
 return await ProfileBuilderProgram.RunAsync(args);
 
@@ -88,11 +94,7 @@ internal static class ProfileBuilderProgram
             3,
             "snapshot <profile> <output.json> [--attach <pid>]");
         var profile = ApplicationProfileStore.LoadFile(args[1]);
-        var attachIndex = Array.IndexOf(args, "--attach");
-        int? processId = attachIndex >= 0
-            ? int.Parse(args.ElementAtOrDefault(attachIndex + 1)
-                ?? throw new ArgumentException("--attach requires a process ID."))
-            : null;
+        var processId = AttachedProcessId(args);
 
         await using var controller = CreateController(profile);
         var connection = processId is int pid
@@ -111,6 +113,7 @@ internal static class ProfileBuilderProgram
             Console.WriteLine(
                 $"Wrote {snapshot.Value!.Window.Controls.Count} controls for view {snapshot.Value.Window.View.Key}.");
         }
+
         finally
         {
             await controller.DetachAsync(
@@ -119,6 +122,15 @@ internal static class ProfileBuilderProgram
         }
 
         return 0;
+    }
+
+    private static int? AttachedProcessId(string[] args)
+    {
+        var attachIndex = Array.IndexOf(args, "--attach");
+        return attachIndex >= 0
+            ? int.Parse(args.ElementAtOrDefault(attachIndex + 1)
+                ?? throw new ArgumentException("--attach requires a process ID."))
+            : null;
     }
 
     private static int Search(string[] args)

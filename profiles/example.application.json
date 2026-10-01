@@ -12,6 +12,17 @@
   "maxTreeDepth": 6,
   "maxResults": 300,
   "enableScreenshots": false,
+  "allowMultipleInstances": false,
+  "nativeInput": {
+    "enabled": false,
+    "allowMouse": true,
+    "allowKeyboard": false,
+    "allowedMouseButtons": ["left"],
+    "constrainTo": "clientArea",
+    "requireForeground": true,
+    "maximumTextLength": 500,
+    "allowSystemKeys": false
+  },
   "semanticTargets": {
     "customer-name": {
       "intent": "Editable customer name field",

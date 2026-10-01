@@ -17,6 +17,7 @@ internal sealed class AutomationSession : IDisposable
         Application = application;
         Automation = automation;
         MainWindow = mainWindow;
+        NativeWindowHandle = mainWindow.Properties.NativeWindowHandle.Value;
         OwnsProcess = ownsProcess;
     }
 
@@ -28,7 +29,11 @@ internal sealed class AutomationSession : IDisposable
 
     public Window MainWindow { get; set; }
 
+    public long NativeWindowHandle { get; }
+
     public bool OwnsProcess { get; }
+
+    public string SessionId { get; } = Guid.NewGuid().ToString("N");
 
     public void Dispose()
     {

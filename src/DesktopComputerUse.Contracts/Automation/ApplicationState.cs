@@ -7,4 +7,10 @@ public sealed record ApplicationState(
     bool OwnsProcess,
     bool HasExited,
     string? ActiveWindowTitle,
-    AutomationBackend Backend);
+    AutomationBackend Backend)
+{
+    public string? ProfileRevision { get; init; }
+    public long ProfileGeneration { get; init; }
+    public bool ProfileIsStale { get; init; }
+    public string? SessionId { get; init; }
+}

@@ -11,6 +11,47 @@ public sealed class FuzzyControlResolverTests
     private readonly FuzzyControlResolver _resolver = new();
 
     [Fact]
+    public void Resolve_skips_failed_identity_candidate_and_reports_diagnostics()
+    {
+        var failure = new AutomationDiagnostic
+        {
+            CandidateId = "bad", Property = "AutomationId", Phase = "readProperty",
+            Code = AutomationErrorCode.ProviderFailure
+        };
+        var snapshot = SnapshotFixtures.Application(
+        [
+            SnapshotFixtures.Control("bad", automationId: "SaveButton") with { Failures = [failure] },
+            SnapshotFixtures.Control("good", automationId: "SaveButton")
+        ]);
+        var result = _resolver.Resolve(snapshot, "save",
+            Target("save", [new SelectorStrategy { AutomationId = "SaveButton" }]));
+        Assert.Equal(ResolutionStatus.Resolved, result.Status);
+        Assert.Equal("good", result.SelectedCandidateId);
+        Assert.True(result.Partial);
+        Assert.Same(failure, Assert.Single(result.Failures));
+    }
+
+    [Fact]
+    public void Resolve_preserves_candidate_with_optional_property_failure()
+    {
+        var snapshot = SnapshotFixtures.Application(
+        [
+            SnapshotFixtures.Control("good", automationId: "SaveButton") with
+            {
+                Failures =
+                [
+                    new AutomationDiagnostic { Property = "HelpText", Phase = "readProperty" }
+                ]
+            }
+        ]);
+        var result = _resolver.Resolve(snapshot, "save",
+            Target("save", [new SelectorStrategy { AutomationId = "SaveButton" }]));
+        Assert.Equal(ResolutionStatus.Resolved, result.Status);
+        Assert.Equal("good", result.SelectedCandidateId);
+        Assert.Single(result.Failures);
+    }
+
+    [Fact]
     public void Resolve_returns_a_unique_exact_strategy_match_before_fuzzy_scoring()
     {
         var snapshot = SnapshotFixtures.Application(

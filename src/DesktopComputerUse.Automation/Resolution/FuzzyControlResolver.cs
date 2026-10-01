@@ -13,6 +13,33 @@ public sealed class FuzzyControlResolver
         SemanticTargetDefinition target,
         int maximumCandidates = 10)
     {
+        var result = ResolveCore(snapshot, semanticKey, target, maximumCandidates) with
+        {
+            Failures = snapshot.Failures.Concat(snapshot.Window.Controls.SelectMany(control => control.Failures))
+                .Distinct().ToArray()
+        };
+        return snapshot.Truncated || result.Failures.Any(failure => failure.Phase == "enumerateChildren")
+            ? MarkIncomplete(result)
+            : result;
+    }
+
+    private static ControlResolutionResult MarkIncomplete(ControlResolutionResult result)
+        => result.Status is ResolutionStatus.Resolved or ResolutionStatus.NotFound
+            ? result with
+            {
+                TraversalComplete = false,
+                Status = ResolutionStatus.Ambiguous,
+                SelectedCandidateId = null,
+                Reason = "The snapshot traversal was incomplete; unseen controls may change resolution. Retry inspection before acting."
+            }
+            : result with { TraversalComplete = false };
+
+    private ControlResolutionResult ResolveCore(
+        ApplicationSnapshot snapshot,
+        string semanticKey,
+        SemanticTargetDefinition target,
+        int maximumCandidates)
+    {
         if (!string.IsNullOrWhiteSpace(target.Scope.ViewKey) &&
             !string.Equals(
                 target.Scope.ViewKey,
@@ -156,6 +183,14 @@ public sealed class FuzzyControlResolver
         ControlSnapshot control,
         SemanticTargetDefinition target)
     {
+        if (control.Failures.Any(failure =>
+                failure.Property is "AutomationId" or "Name" or "ClassName" or "ControlType" or
+                    "IsEnabled" or "IsOffscreen" or "IsPassword" ||
+                target.RequiredPatterns.Any(pattern => failure.Property == $"Patterns.{pattern}")))
+        {
+            return false;
+        }
+
         if (target.ExpectedControlTypes.Count > 0 &&
             !target.ExpectedControlTypes.Contains(
                 control.ControlType,

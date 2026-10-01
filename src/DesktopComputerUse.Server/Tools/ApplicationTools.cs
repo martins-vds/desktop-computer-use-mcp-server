@@ -20,8 +20,10 @@ public sealed class ApplicationTools
     public static Task<AutomationResult<ApplicationState>> LaunchApplication(
         DesktopAutomationController controller,
         [Description("The ID returned by list_application_profiles.")] string profileId,
-        CancellationToken cancellationToken)
-        => controller.LaunchAsync(profileId, cancellationToken);
+        CancellationToken cancellationToken,
+        [Description("Existing-process policy: fail (default), attach (one verified match), or launchNew (requires profile permission).")] string ifAlreadyRunning = "fail",
+        [Description("Failed launches terminate only the newly spawned process. Supported value: terminateSpawned.")] string onLaunchFailure = "terminateSpawned")
+        => controller.LaunchAsync(profileId, ifAlreadyRunning, onLaunchFailure, cancellationToken);
 
     [McpServerTool(Name = "attach_application", UseStructuredContent = true)]
     [Description("Attaches to an existing process only when its executable matches the selected allowlisted application profile.")]
@@ -48,7 +50,7 @@ public sealed class ApplicationTools
         => controller.GetApplicationStateAsync(cancellationToken);
 
     [McpServerTool(Name = "capture_application_window", UseStructuredContent = true)]
-    [Description("Captures only the attached application's main window. The selected profile must explicitly enable screenshots.")]
+    [Description("Deprecated structured-base64 compatibility capture. Prefer capture_application_window_image. Requires screenshots enabled and a restored visible HWND; redaction must be complete.")]
     public static Task<AutomationResult<WindowCapture>> CaptureApplicationWindow(
         DesktopAutomationController controller,
         CancellationToken cancellationToken)

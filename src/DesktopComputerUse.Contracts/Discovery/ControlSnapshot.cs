@@ -44,7 +44,10 @@ public sealed record ControlSnapshot
 
     public RectangleInfo Bounds { get; init; } = new(0, 0, 0, 0);
 
-    public RectangleInfo RelativeBounds { get; init; } = new(0, 0, 0, 0);
+    public RectangleInfo RelativeBounds { get; init; } = new(0, 0, 0, 0)
+    {
+        CoordinateSpace = "windowRelative", Units = "normalized"
+    };
 
     public IReadOnlyList<string> SupportedPatterns { get; init; } = [];
 
@@ -53,4 +56,12 @@ public sealed record ControlSnapshot
     public IReadOnlyList<NearbyLabel> NearbyLabels { get; init; } = [];
 
     public IReadOnlyList<string> TreePath { get; init; } = [];
+
+    public int Depth { get; init; }
+
+    public IReadOnlyList<AutomationDiagnostic> Failures { get; init; } = [];
+
+    public bool Partial => Failures.Count > 0;
+
+    public bool Truncated { get; init; }
 }

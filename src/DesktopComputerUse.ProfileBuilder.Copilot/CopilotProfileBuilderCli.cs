@@ -33,7 +33,7 @@ internal static class CopilotProfileBuilderCli
 
     private static CopilotCommand Parse(string[] args)
     {
-        if (args.Length < 3 || args[0] is "-h" or "--help" or "help")
+        if (UsageRequested(args))
         {
             throw new ArgumentException(
                 "Usage: profile-builder-copilot <profile> <snapshot.json> <semantic-key> [model]");
@@ -45,6 +45,9 @@ internal static class CopilotProfileBuilderCli
             args[2],
             args.ElementAtOrDefault(3) ?? "auto");
     }
+
+    private static bool UsageRequested(string[] args)
+        => args.Length < 3 || new[] { "-h", "--help", "help" }.Contains(args[0], StringComparer.Ordinal);
 
     private static async Task<int> ExecuteAsync(CopilotCommand command)
     {

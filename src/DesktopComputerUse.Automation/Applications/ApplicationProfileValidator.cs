@@ -7,8 +7,20 @@ public static class ApplicationProfileValidator
 {
     public static void Validate(ApplicationProfile profile)
     {
+        ArgumentNullException.ThrowIfNull(profile);
+        profile.ValidateWindowAndBackend();
+        if (profile.SemanticSelectors is null || profile.SemanticTargets is null ||
+            profile.SensitiveAutomationIds is null)
+        {
+            throw new ProfileValidationException("Profile collections cannot be null.");
+        }
         ValidateIdentity(profile);
         ValidateLimits(profile);
+        if (profile.NativeInput is null)
+        {
+            throw new ProfileValidationException("Native input policy cannot be null.");
+        }
+        profile.NativeInput.Validate();
         ValidateLegacySelectors(profile);
         ValidateSchema(profile);
     }
@@ -77,7 +89,7 @@ public static class ApplicationProfileValidator
     {
         foreach (var (key, selector) in profile.SemanticSelectors)
         {
-            if (string.IsNullOrWhiteSpace(key) || selector.IsEmpty)
+            if (string.IsNullOrWhiteSpace(key) || selector is null || selector.IsEmpty)
             {
                 throw new ProfileValidationException(
                     $"Application profile '{profile.Id}' contains an invalid semantic selector.");
@@ -94,6 +106,15 @@ public static class ApplicationProfileValidator
                 throw new ProfileValidationException(
                     $"Semantic selector '{key}' in profile '{profile.Id}' has a negative index.");
             }
+            ValidateSelectorType(profile.Id, selector.ControlType);
+        }
+    }
+
+    private static void ValidateSelectorType(string profileId, string? controlType)
+    {
+        if (!string.IsNullOrWhiteSpace(controlType))
+        {
+            ValidateControlTypes(profileId, "selector", [controlType]);
         }
     }
 
@@ -116,53 +137,74 @@ public static class ApplicationProfileValidator
         string key,
         SemanticTargetDefinition target)
     {
-        if (string.IsNullOrWhiteSpace(key) || string.IsNullOrWhiteSpace(target.Intent))
+        if (string.IsNullOrWhiteSpace(key) || target is null || string.IsNullOrWhiteSpace(target.Intent))
         {
             throw new ProfileValidationException(
                 $"Application profile '{profileId}' contains a semantic target without a key or intent.");
         }
 
-        if (target.Strategies.Count == 0)
+        if (target.Strategies is null || target.Strategies.Count == 0)
         {
             throw new ProfileValidationException(
                 $"Semantic target '{key}' in profile '{profileId}' requires at least one selector strategy.");
         }
 
-        if (target.Thresholds.MinimumConfidence is < 0 or > 1 ||
-            target.Thresholds.MinimumMargin is < 0 or > 1)
+        ValidateThresholds(profileId, key, target.Thresholds);
+        foreach (var strategy in target.Strategies)
+        {
+            ValidateStrategy(profileId, key, strategy);
+        }
+
+        ValidateControlTypes(profileId, key, target.ExpectedControlTypes);
+    }
+
+    private static void ValidateThresholds(string profileId, string key, ResolutionThresholds? thresholds)
+    {
+        if (thresholds is null ||
+            thresholds.MinimumConfidence is < 0 or > 1 ||
+            thresholds.MinimumMargin is < 0 or > 1)
         {
             throw new ProfileValidationException(
                 $"Semantic target '{key}' in profile '{profileId}' has invalid resolution thresholds.");
         }
+    }
 
-        foreach (var strategy in target.Strategies)
+    private static void ValidateStrategy(string profileId, string key, SelectorStrategy? strategy)
+    {
+        if (strategy is null || strategy.IsEmpty)
         {
-            if (strategy.IsEmpty)
-            {
-                throw new ProfileValidationException(
-                    $"Semantic target '{key}' in profile '{profileId}' contains an empty selector strategy.");
-            }
-
-            if (!string.IsNullOrWhiteSpace(strategy.SemanticKey))
-            {
-                throw new ProfileValidationException(
-                    $"Semantic target '{key}' in profile '{profileId}' cannot reference another semantic key.");
-            }
-
-            if (strategy.Weight is < 0 or > 1)
-            {
-                throw new ProfileValidationException(
-                    $"Semantic target '{key}' in profile '{profileId}' has a strategy weight outside 0 to 1.");
-            }
-
-            if (strategy.Index is < 0)
-            {
-                throw new ProfileValidationException(
-                    $"Semantic target '{key}' in profile '{profileId}' has a negative strategy index.");
-            }
+            throw new ProfileValidationException(
+                $"Semantic target '{key}' in profile '{profileId}' contains an empty selector strategy.");
         }
 
-        foreach (var controlType in target.ExpectedControlTypes)
+        if (!string.IsNullOrWhiteSpace(strategy.SemanticKey))
+        {
+            throw new ProfileValidationException(
+                $"Semantic target '{key}' in profile '{profileId}' cannot reference another semantic key.");
+        }
+
+        ValidateSelectorType(profileId, strategy.ControlType);
+        if (strategy.Weight is < 0 or > 1)
+        {
+            throw new ProfileValidationException(
+                $"Semantic target '{key}' in profile '{profileId}' has a strategy weight outside 0 to 1.");
+        }
+
+        if (strategy.Index is < 0)
+        {
+            throw new ProfileValidationException(
+                $"Semantic target '{key}' in profile '{profileId}' has a negative strategy index.");
+        }
+    }
+
+    private static void ValidateControlTypes(string profileId, string key, IReadOnlyList<string>? types)
+    {
+        if (types is null)
+        {
+            throw new ProfileValidationException(
+                $"Semantic target '{key}' in profile '{profileId}' requires expected control types.");
+        }
+        foreach (var controlType in types)
         {
             if (!Enum.TryParse<FlaUI.Core.Definitions.ControlType>(
                     controlType,

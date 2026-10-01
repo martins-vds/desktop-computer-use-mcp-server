@@ -4,4 +4,10 @@ public sealed record WindowCapture(
     string MimeType,
     string Base64Data,
     int Width,
-    int Height);
+    int Height)
+{
+    public string? Method { get; init; }
+    public bool OcclusionSafe { get; init; }
+    public NativeCaptureToken? Token { get; init; }
+    public int RedactedControlCount { get; init; }
+}

@@ -2,25 +2,42 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+quality_directory="${1:-artifacts/quality}"
 
-bash "$repo_root/scripts/install-quality-tools.sh"
 cd "$repo_root"
 
-mkdir -p artifacts/quality/crap artifacts/quality/stryker
+crap_runner="$repo_root/scripts/QualityAnalysis/bin/Release/net8.0/QualityAnalysis.dll"
+if [[ ! -f "$crap_runner" ]] ||
+   [[ ! -x "$repo_root/.tools/dotnet-stryker" ]]; then
+  echo "Quality tools are missing. Run scripts/install-quality-tools.sh first." >&2
+  exit 1
+fi
+
+mkdir -p "$quality_directory/crap" "$quality_directory/stryker" "$quality_directory/coverage"
+
+dotnet build DesktopComputerUse.sln --no-incremental --verbosity quiet
+coverage_directory="$(mktemp -d "$quality_directory/coverage/run-XXXXXX")"
+dotnet test DesktopComputerUse.sln \
+  --no-build \
+  --collect:"XPlat Code Coverage" \
+  --results-directory "$coverage_directory" \
+  --verbosity minimal
+python3 scripts/merge-cobertura.py "$coverage_directory" "$quality_directory/coverage/merged.cobertura.xml"
 
 set +e
-dotnet dotnet-crap analyze DesktopComputerUse.sln \
-  --run-tests \
-  --threshold 20 \
-  --min-crap 0 \
-  --output artifacts/quality/crap/report.json
+dotnet "$crap_runner" src \
+  "$quality_directory/coverage/merged.cobertura.xml" \
+  "$quality_directory/crap/report.json"
 crap_exit=$?
 set -e
 
+set +e
 .tools/dotnet-stryker \
   --test-project tests/DesktopComputerUse.Automation.Tests/DesktopComputerUse.Automation.Tests.csproj \
+  --test-project tests/DesktopComputerUse.Native.Tests/DesktopComputerUse.Native.Tests.csproj \
   --project src/DesktopComputerUse.Automation/DesktopComputerUse.Automation.csproj \
   --target-framework net8.0-windows \
+  --mutation-level Complete \
   --mutate '**/Resolution/*.cs' \
   --mutate '**/Profiles/*.cs' \
   --mutate '**/Applications/ApplicationProfileStore.cs' \
@@ -28,15 +45,47 @@ set -e
   --mutate '**/Applications/WindowSelectorMatcher.cs' \
   --mutate '**/AutomationExceptionResultMapper.cs' \
   --mutate '**/Discovery/NearbyLabelGeometry.cs' \
+  --mutate '**/Discovery/ApplicationSnapshotBuilder.cs' \
+  --mutate '**/FlaUi/ControlObserver.cs' \
+  --mutate '**/FlaUi/SafeAutomationElementReader.cs' \
+  --mutate '**/FlaUi/SafeAutomationTraversal.cs' \
+  --mutate '**/CapturePrivacy.cs' \
+  --mutate '**/Selectors/*.cs' \
+  --mutate '**/Applications/*.cs' \
+  --mutate '**/Windows/*.cs' \
+  --mutate '**/DesktopAutomationController*.cs' \
   --reporter ClearText \
   --reporter Json \
-  --output artifacts/quality/stryker \
+  --output "$quality_directory/stryker" \
   --concurrency 2 \
   --skip-version-check \
   --break-at 80 \
   --threshold-low 80 \
   --threshold-high 90
+automation_mutation_exit=$?
+
+.tools/dotnet-stryker \
+  --test-project tests/DesktopComputerUse.Automation.Tests/DesktopComputerUse.Automation.Tests.csproj \
+  --test-project tests/DesktopComputerUse.Native.Tests/DesktopComputerUse.Native.Tests.csproj \
+  --project src/DesktopComputerUse.Contracts/DesktopComputerUse.Contracts.csproj \
+  --target-framework net8.0 \
+  --mutation-level Complete \
+  --mutate '**/*.cs' \
+  --reporter ClearText \
+  --reporter Json \
+  --output "$quality_directory/stryker-contracts" \
+  --concurrency 2 \
+  --skip-version-check \
+  --break-at 80 \
+  --threshold-low 80 \
+  --threshold-high 90
+contracts_mutation_exit=$?
+set -e
 
 if [[ "$crap_exit" -ne 0 ]]; then
-  echo "CRAP4NET found methods above the configured threshold; see artifacts/quality/crap/report.json." >&2
+  echo "Microsoft CRAP found members at or above 20; see $quality_directory/crap/report.json." >&2
+fi
+
+if [[ "$crap_exit" -ne 0 || "$automation_mutation_exit" -ne 0 || "$contracts_mutation_exit" -ne 0 ]]; then
+  exit 1
 fi

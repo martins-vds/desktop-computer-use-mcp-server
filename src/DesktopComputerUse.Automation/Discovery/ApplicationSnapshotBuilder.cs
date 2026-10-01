@@ -10,400 +10,237 @@ using FlaUI.Core.AutomationElements;
 
 namespace DesktopComputerUse.Automation.Discovery;
 
-public sealed class ApplicationSnapshotBuilder
+public sealed class ApplicationSnapshotBuilder(ControlObserver observer)
 {
-    private readonly ControlObserver _observer;
-
-    public ApplicationSnapshotBuilder(ControlObserver observer)
-    {
-        _observer = observer;
-    }
-
     internal ApplicationSnapshot Build(
         AutomationSession session,
         int maxDepth,
         int maxResults,
         CancellationToken cancellationToken)
-    {
-        var nodes = CaptureNodes(
-            session.MainWindow,
-            maxDepth,
-            maxResults,
-            cancellationToken,
-            out var isComplete);
-        var runtimeLookup = nodes
-            .Where(node => node.RuntimeKey is not null)
-            .GroupBy(node => node.RuntimeKey!, StringComparer.Ordinal)
-            .ToDictionary(
-                group => group.Key,
-                group => group.First().CandidateId,
-                StringComparer.Ordinal);
+        => Build(session.MainWindow, session.Profile, session.Application.ProcessId,
+            maxDepth, maxResults, cancellationToken);
 
-        var snapshots = nodes
-            .Select(node => BuildSnapshot(
-                node,
-                nodes,
-                runtimeLookup,
-                session.Profile,
-                session.MainWindow.BoundingRectangle))
-            .ToArray();
-
-        var windowSummary = snapshots[0];
-        var view = BuildViewSignature(session.MainWindow, snapshots);
-
-        return new ApplicationSnapshot(
-            session.Profile.Id,
-            session.Application.ProcessId,
-            session.Profile.ExecutablePath,
-            session.Profile.Backend,
-            DateTimeOffset.UtcNow,
-            new WindowSnapshot(
-                windowSummary.CandidateId,
-                session.MainWindow.Title,
-                windowSummary.AutomationId,
-                windowSummary.ClassName,
-                windowSummary.Bounds,
-                view,
-                snapshots,
-                isComplete));
-    }
-
-    private static IReadOnlyList<NodeCapture> CaptureNodes(
+    public ApplicationSnapshot Build(
         AutomationElement root,
+        ApplicationProfile profile,
+        int processId,
         int maxDepth,
         int maxResults,
-        CancellationToken cancellationToken,
-        out bool isComplete)
+        CancellationToken cancellationToken = default)
     {
-        var nodes = new List<NodeCapture>(Math.Min(maxResults, 256));
-        var queue = new Queue<(AutomationElement Element, string? ParentId, int Depth, IReadOnlyList<string> Path)>();
-        queue.Enqueue((root, null, 0, []));
-        var complete = true;
-
-        while (queue.Count > 0)
+        var capture = SafeAutomationTraversal.Capture(
+            root, element => element.FindAllChildren(), maxDepth, maxResults,
+            new AutomationDiagnostic
+            {
+                Operation = "snapshotApplicationSchema", ProfileId = profile.Id, ProcessId = processId,
+                ProfileRevision = profile.Metadata?.Revision
+            }, cancellationToken);
+        var summaries = capture.Nodes.ToDictionary(
+            node => node.CandidateId,
+            node => observer.Observe(node.Element, profile, node.Reader));
+        var windowBounds = summaries[capture.Nodes[0].CandidateId].Bounds;
+        var runtimeLookup = BuildRuntimeLookup(capture.Nodes, cancellationToken);
+        var controls = capture.Nodes.Select(node =>
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (nodes.Count >= maxResults)
+            return BuildSnapshot(node, summaries[node.CandidateId], capture.Nodes,
+                runtimeLookup, windowBounds);
+        }).ToArray();
+        EnrichControls(controls, capture.Failures);
+        var window = controls[0];
+        return new ApplicationSnapshot(
+            profile.Id, processId, profile.ExecutablePath, profile.Backend, DateTimeOffset.UtcNow,
+            new WindowSnapshot(window.CandidateId, window.Name, window.AutomationId,
+                window.ClassName, window.Bounds, BuildViewSignature(window, controls),
+                controls, !capture.Partial && !capture.Truncated)
             {
-                complete = false;
-                break;
-            }
-
-            complete &= CaptureNode(
-                queue.Dequeue(),
-                queue,
-                nodes,
-                maxDepth);
-        }
-
-        isComplete = complete;
-        return nodes;
+                Partial = capture.Partial,
+                Truncated = capture.Truncated,
+                Failures = capture.Failures.ToArray()
+            });
     }
 
-    private static bool CaptureNode(
-        (AutomationElement Element, string? ParentId, int Depth, IReadOnlyList<string> Path) item,
-        Queue<(AutomationElement Element, string? ParentId, int Depth, IReadOnlyList<string> Path)> queue,
-        ICollection<NodeCapture> nodes,
-        int maxDepth)
+    private static IReadOnlyDictionary<string, string> BuildRuntimeLookup(
+        IReadOnlyList<AutomationNodeCapture<AutomationElement>> nodes,
+        CancellationToken cancellationToken)
     {
-        var candidateId = $"node-{nodes.Count + 1:0000}";
-        var path = item.Path.Append(DescribeForPath(item.Element)).ToArray();
-        nodes.Add(new NodeCapture(
-            candidateId,
-            item.ParentId,
-            item.Element,
-            item.Depth,
-            path,
-            GetRuntimeKey(item.Element)));
-        var children = SafeGet(item.Element.FindAllChildren, []);
-        if (item.Depth >= maxDepth)
+        var runtimeLookup = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var node in nodes)
         {
-            return children.Length == 0;
+            cancellationToken.ThrowIfCancellationRequested();
+            var key = ReadRuntimeKey(node.Element, node.Reader);
+            AddRuntimeKey(runtimeLookup, key, node.CandidateId);
         }
-
-        foreach (var child in children)
-        {
-            queue.Enqueue((child, candidateId, item.Depth + 1, path));
-        }
-
-        return true;
+        return runtimeLookup;
     }
 
-    private ControlSnapshot BuildSnapshot(
-        NodeCapture node,
-        IReadOnlyList<NodeCapture> nodes,
+    internal static void AddRuntimeKey(IDictionary<string, string> lookup, string? key, string candidateId)
+    {
+        if (key is not null)
+            lookup.TryAdd(key, candidateId);
+    }
+
+    internal static void EnrichControls(
+        ControlSnapshot[] controls, IReadOnlyList<AutomationDiagnostic> failures)
+    {
+        var lookup = controls.ToDictionary(control => control.CandidateId, StringComparer.Ordinal);
+        for (var index = 0; index < controls.Length; index++)
+        {
+            var control = controls[index];
+            controls[index] = control with
+            {
+                TreePath = BuildPath(control, lookup),
+                NearbyLabels = FindNearbyLabels(control, controls, lookup),
+                Failures = failures.Where(failure =>
+                    failure.CandidateId == control.CandidateId).ToArray()
+            };
+        }
+    }
+
+    private static ControlSnapshot BuildSnapshot(
+        AutomationNodeCapture<AutomationElement> node,
+        ControlSummary summary,
+        IReadOnlyList<AutomationNodeCapture<AutomationElement>> nodes,
         IReadOnlyDictionary<string, string> runtimeLookup,
-        ApplicationProfile profile,
-        System.Drawing.Rectangle windowBounds)
+        RectangleInfo windowBounds)
     {
-        var summary = _observer.Observe(node.Element, profile);
-        var children = GetChildIds(node, nodes);
-        var siblings = GetSiblingIds(node, nodes);
-        var labeledById = GetLabeledById(node.Element, runtimeLookup);
-        var isPassword = SafeGet(
-            () => node.Element.Properties.IsPassword.ValueOrDefault,
-            false);
-        var valueState = GetValueState(summary, isPassword);
-
+        var reader = node.Reader;
+        var element = node.Element;
+        var labeledById = GetLabeledById(element, reader, runtimeLookup);
+        // Observe has already applied fail-closed password/profile redaction.
+        var password = summary.IsPassword;
+        var redacted = summary.IsValueRedacted || password;
         return new ControlSnapshot
         {
             CandidateId = node.CandidateId,
             ParentCandidateId = node.ParentCandidateId,
-            ChildCandidateIds = children,
-            SiblingCandidateIds = siblings,
+            Depth = node.Depth,
+            Truncated = node.Truncated,
+            ChildCandidateIds = nodes.Where(child => child.ParentCandidateId == node.CandidateId)
+                .Select(child => child.CandidateId).ToArray(),
+            SiblingCandidateIds = GetSiblingIds(node, nodes),
             Name = summary.Name,
             AutomationId = summary.AutomationId,
             ControlType = summary.ControlType,
-            LocalizedControlType = NullIfEmpty(SafeGet(
-                () => node.Element.Properties.LocalizedControlType.ValueOrDefault,
-                string.Empty)),
             ClassName = summary.ClassName,
-            FrameworkId = NullIfEmpty(SafeGet(
-                () => node.Element.FrameworkType.ToString(),
-                string.Empty)),
-            HelpText = NullIfEmpty(SafeGet(() => node.Element.HelpText, string.Empty)),
-            AccessKey = NullIfEmpty(SafeGet(
-                () => node.Element.Properties.AccessKey.ValueOrDefault,
-                string.Empty)),
-            AcceleratorKey = NullIfEmpty(SafeGet(
-                () => node.Element.Properties.AcceleratorKey.ValueOrDefault,
-                string.Empty)),
+            LocalizedControlType = NullIfEmpty(reader.Read("LocalizedControlType",
+                () => element.Properties.LocalizedControlType.Value, string.Empty)),
+            FrameworkId = NullIfEmpty(reader.Read("FrameworkId",
+                () => element.FrameworkType.ToString(), string.Empty)),
+            HelpText = NullIfEmpty(reader.Read("HelpText", () => element.HelpText, string.Empty)),
+            AccessKey = NullIfEmpty(reader.Read("AccessKey",
+                () => element.Properties.AccessKey.Value, string.Empty)),
+            AcceleratorKey = NullIfEmpty(reader.Read("AcceleratorKey",
+                () => element.Properties.AcceleratorKey.Value, string.Empty)),
             IsEnabled = summary.IsEnabled,
             IsOffscreen = summary.IsOffscreen,
-            IsKeyboardFocusable = SafeGet(
-                () => node.Element.Properties.IsKeyboardFocusable.ValueOrDefault,
-                false),
-            IsPassword = isPassword,
-            IsValueRedacted = valueState.IsRedacted,
-            Value = valueState.Value,
+            IsKeyboardFocusable = reader.Read("IsKeyboardFocusable",
+                () => element.Properties.IsKeyboardFocusable.Value, false),
+            IsPassword = password,
+            IsValueRedacted = redacted,
+            Value = redacted ? null : summary.Value,
             Bounds = summary.Bounds,
             RelativeBounds = RelativeBounds(summary.Bounds, windowBounds),
             SupportedPatterns = summary.SupportedPatterns,
-            LabeledByCandidateId = labeledById,
-            NearbyLabels = FindNearbyLabels(node, nodes, labeledById),
-            TreePath = node.TreePath
+            LabeledByCandidateId = labeledById
         };
     }
 
-    private static (bool IsRedacted, string? Value) GetValueState(
-        ControlSummary summary,
-        bool isPassword)
-    {
-        var redacted = summary.IsValueRedacted || isPassword;
-        return (redacted, redacted ? null : summary.Value);
-    }
-
-    private static IReadOnlyList<string> GetChildIds(
-        NodeCapture node,
-        IReadOnlyList<NodeCapture> nodes)
-        => nodes
-            .Where(candidate => candidate.ParentCandidateId == node.CandidateId)
-            .Select(candidate => candidate.CandidateId)
-            .ToArray();
-
     private static IReadOnlyList<string> GetSiblingIds(
-        NodeCapture node,
-        IReadOnlyList<NodeCapture> nodes)
-        => node.ParentCandidateId is null
-            ? []
-            : nodes
-                .Where(candidate =>
-                    candidate.ParentCandidateId == node.ParentCandidateId &&
-                    candidate.CandidateId != node.CandidateId)
-                .Select(candidate => candidate.CandidateId)
-                .ToArray();
+        AutomationNodeCapture<AutomationElement> node,
+        IReadOnlyList<AutomationNodeCapture<AutomationElement>> nodes)
+        => node.ParentCandidateId is null ? [] : nodes
+            .Where(sibling => sibling.ParentCandidateId == node.ParentCandidateId &&
+                sibling.CandidateId != node.CandidateId)
+            .Select(sibling => sibling.CandidateId).ToArray();
 
     private static string? GetLabeledById(
         AutomationElement element,
-        IReadOnlyDictionary<string, string> runtimeLookup)
+        SafeAutomationElementReader reader,
+        IReadOnlyDictionary<string, string> lookup)
     {
-        var labeledBy = SafeGet(
-            () => element.Properties.LabeledBy.ValueOrDefault,
-            null);
-        return labeledBy is null
-            ? null
-            : runtimeLookup.GetValueOrDefault(GetRuntimeKey(labeledBy) ?? string.Empty);
+        var labeledBy = reader.Read("LabeledBy", () => element.Properties.LabeledBy.Value, null);
+        var key = labeledBy is null ? null : ReadRuntimeKey(labeledBy, reader, "LabeledBy.RuntimeId");
+        return key is null ? null : lookup.GetValueOrDefault(key);
     }
 
-    private static IReadOnlyList<NearbyLabel> FindNearbyLabels(
-        NodeCapture node,
-        IReadOnlyList<NodeCapture> nodes,
-        string? labeledById)
+    private static string? ReadRuntimeKey(
+        AutomationElement element,
+        SafeAutomationElementReader reader,
+        string property = "RuntimeId")
     {
-        var labels = CreateExplicitLabels(nodes, labeledById);
-        MergeLabels(labels, FindGeometricLabels(node, nodes));
+        var id = reader.Read(property, () => element.Properties.RuntimeId.Value, []);
+        return id is null || id.Length == 0 ? null : string.Join(".", id);
+    }
+
+    internal static IReadOnlyList<string> BuildPath(
+        ControlSnapshot control,
+        IReadOnlyDictionary<string, ControlSnapshot> lookup)
+    {
+        var path = new List<string>();
+        for (var current = control; current is not null;
+             current = current.ParentCandidateId is null ? null : lookup.GetValueOrDefault(current.ParentCandidateId))
+        {
+            path.Add(current.AutomationId ?? current.Name ?? current.ControlType);
+        }
+        path.Reverse();
+        return path;
+    }
+
+    internal static IReadOnlyList<NearbyLabel> FindNearbyLabels(
+        ControlSnapshot control,
+        IReadOnlyList<ControlSnapshot> controls,
+        IReadOnlyDictionary<string, ControlSnapshot> lookup)
+    {
+        var labels = new List<NearbyLabel>();
+        if (control.LabeledByCandidateId is string id &&
+            lookup.TryGetValue(id, out var explicitLabel) &&
+            !string.IsNullOrWhiteSpace(explicitLabel.Name))
+            labels.Add(new NearbyLabel(id, explicitLabel.Name, "labeledBy", 0, 1));
+        if (control.ParentCandidateId is null ||
+            control.Bounds.Width <= 0 || control.Bounds.Height <= 0)
+            return labels;
+        labels.AddRange(controls.Where(candidate =>
+                candidate.ParentCandidateId == control.ParentCandidateId &&
+                candidate.CandidateId != control.CandidateId && candidate.ControlType == "Text" &&
+                !string.IsNullOrWhiteSpace(candidate.Name) &&
+                candidate.Bounds.Width > 0 && candidate.Bounds.Height > 0 &&
+                candidate.CandidateId != control.LabeledByCandidateId)
+            .Select(candidate => NearbyLabelGeometry.Create(
+                candidate.CandidateId, candidate.Name!, candidate.Bounds, control.Bounds))
+            .Where(label => label is not null).Cast<NearbyLabel>()
+            .OrderByDescending(label => label.Confidence).ThenBy(label => label.Distance).Take(3));
         return labels;
     }
 
-    private static IReadOnlyList<NearbyLabel> FindGeometricLabels(
-        NodeCapture node,
-        IReadOnlyList<NodeCapture> nodes)
-    {
-        var target = SafeGet(
-            () => node.Element.BoundingRectangle,
-            System.Drawing.Rectangle.Empty);
-        if (node.ParentCandidateId is null || target.IsEmpty)
-        {
-            return [];
-        }
-
-        return nodes
-            .Where(candidate => IsSiblingText(candidate, node))
-            .Select(candidate => CreateGeometricLabel(candidate, target))
-            .Where(label => label is not null)
-            .Cast<NearbyLabel>()
-            .OrderByDescending(label => label.Confidence)
-            .ThenBy(label => label.Distance)
-            .Take(3)
-            .ToArray();
-    }
-
-    private static bool IsSiblingText(NodeCapture candidate, NodeCapture node)
-        => candidate.ParentCandidateId == node.ParentCandidateId &&
-            candidate.CandidateId != node.CandidateId &&
-            SafeGet(() => candidate.Element.ControlType.ToString(), string.Empty) == "Text";
-
-    private static void MergeLabels(
-        ICollection<NearbyLabel> labels,
-        IEnumerable<NearbyLabel> additions)
-    {
-        foreach (var label in additions.Where(label =>
-                     labels.All(existing => existing.CandidateId != label.CandidateId)))
-        {
-            labels.Add(label);
-        }
-    }
-
-    private static List<NearbyLabel> CreateExplicitLabels(
-        IReadOnlyList<NodeCapture> nodes,
-        string? labeledById)
-    {
-        var text = GetExplicitLabelText(nodes, labeledById);
-        return text is null
-            ? []
-            : [new NearbyLabel(labeledById!, text, "labeledBy", 0, 1)];
-    }
-
-    private static string? GetExplicitLabelText(
-        IReadOnlyList<NodeCapture> nodes,
-        string? labeledById)
-        => labeledById is null
-            ? null
-            : NullIfEmpty(SafeGet(
-                () => nodes.FirstOrDefault(candidate =>
-                    candidate.CandidateId == labeledById)?.Element.Name ?? string.Empty,
-                string.Empty));
-
-    private static NearbyLabel? CreateGeometricLabel(
-        NodeCapture candidate,
-        System.Drawing.Rectangle target)
-    {
-        var text = NullIfEmpty(SafeGet(() => candidate.Element.Name, string.Empty));
-        var bounds = SafeGet(
-            () => candidate.Element.BoundingRectangle,
-            System.Drawing.Rectangle.Empty);
-        if (text is null || bounds.IsEmpty)
-        {
-            return null;
-        }
-
-        return NearbyLabelGeometry.Create(
-            candidate.CandidateId,
-            text,
-            new RectangleInfo(bounds.X, bounds.Y, bounds.Width, bounds.Height),
-            new RectangleInfo(target.X, target.Y, target.Width, target.Height));
-    }
-
-    private static ViewSignature BuildViewSignature(
-        Window window,
+    internal static ViewSignature BuildViewSignature(
+        ControlSnapshot window,
         IReadOnlyList<ControlSnapshot> controls)
     {
-        var automationIds = controls
-            .Where(control => !control.IsOffscreen)
-            .Select(control => control.AutomationId)
-            .Where(value => !string.IsNullOrWhiteSpace(value))
-            .Cast<string>()
-            .Distinct(StringComparer.Ordinal)
-            .OrderBy(value => value, StringComparer.Ordinal)
-            .Take(100)
-            .ToArray();
-        var names = controls
-            .Where(control => !control.IsOffscreen && !control.IsPassword)
-            .Select(control => control.Name)
-            .Where(value => !string.IsNullOrWhiteSpace(value))
-            .Cast<string>()
-            .Distinct(StringComparer.Ordinal)
-            .OrderBy(value => value, StringComparer.Ordinal)
-            .Take(100)
-            .ToArray();
-
-        var signatureText = string.Join(
-            "\n",
-            new[] { window.Title ?? string.Empty, window.ClassName ?? string.Empty }
-                .Concat(automationIds)
-                .Concat(names));
-        var hash = Convert.ToHexString(
-            SHA256.HashData(Encoding.UTF8.GetBytes(signatureText))).ToLowerInvariant();
-
-        return new ViewSignature(
-            $"view-{hash[..12]}",
-            hash,
-            TextNormalizer.Tokens(window.Title),
-            automationIds,
-            names);
+        var ids = controls.Where(control => !control.IsOffscreen)
+            .Select(control => control.AutomationId).Where(value => !string.IsNullOrWhiteSpace(value))
+            .Cast<string>().Distinct(StringComparer.Ordinal).OrderBy(value => value, StringComparer.Ordinal)
+            .Take(100).ToArray();
+        var names = controls.Where(control => !control.IsOffscreen && !control.IsPassword)
+            .Select(control => control.Name).Where(value => !string.IsNullOrWhiteSpace(value))
+            .Cast<string>().Distinct(StringComparer.Ordinal).OrderBy(value => value, StringComparer.Ordinal)
+            .Take(100).ToArray();
+        var text = string.Join("\n", new[] { window.Name ?? string.Empty, window.ClassName ?? string.Empty }
+            .Concat(ids).Concat(names));
+        var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(text))).ToLowerInvariant();
+        return new ViewSignature($"view-{hash[..12]}", hash, TextNormalizer.Tokens(window.Name), ids, names);
     }
 
-    private static RectangleInfo RelativeBounds(
-        RectangleInfo bounds,
-        System.Drawing.Rectangle window)
-    {
-        if (window.Width <= 0 || window.Height <= 0)
+    internal static RectangleInfo RelativeBounds(RectangleInfo bounds, RectangleInfo window)
+        => (window.Width <= 0 || window.Height <= 0
+            ? new RectangleInfo(0, 0, 0, 0)
+            : new RectangleInfo((bounds.X - window.X) / window.Width,
+                (bounds.Y - window.Y) / window.Height, bounds.Width / window.Width,
+                bounds.Height / window.Height)) with
         {
-            return new RectangleInfo(0, 0, 0, 0);
-        }
-
-        return new RectangleInfo(
-            (bounds.X - window.X) / window.Width,
-            (bounds.Y - window.Y) / window.Height,
-            bounds.Width / window.Width,
-            bounds.Height / window.Height);
-    }
-
-    private static string DescribeForPath(AutomationElement element)
-        => NullIfEmpty(SafeGet(() => element.AutomationId, string.Empty))
-            ?? NullIfEmpty(SafeGet(() => element.Name, string.Empty))
-            ?? SafeGet(() => element.ControlType.ToString(), "Unknown");
-
-    private static string? GetRuntimeKey(AutomationElement element)
-    {
-        var runtimeId = SafeGet(
-            () => element.Properties.RuntimeId.ValueOrDefault,
-            []);
-        return runtimeId is null || runtimeId.Length == 0
-            ? null
-            : string.Join(".", runtimeId);
-    }
-
-    private static T SafeGet<T>(Func<T> getter, T fallback)
-    {
-        try
-        {
-            return getter();
-        }
-        catch
-        {
-            return fallback;
-        }
-    }
+            CoordinateSpace = "windowRelative", Units = "normalized"
+        };
 
     private static string? NullIfEmpty(string? value)
         => string.IsNullOrWhiteSpace(value) ? null : value;
-
-    private sealed record NodeCapture(
-        string CandidateId,
-        string? ParentCandidateId,
-        AutomationElement Element,
-        int Depth,
-        IReadOnlyList<string> TreePath,
-        string? RuntimeKey);
 }

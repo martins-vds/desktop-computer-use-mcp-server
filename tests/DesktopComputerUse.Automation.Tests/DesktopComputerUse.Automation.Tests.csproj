@@ -25,6 +25,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\DesktopComputerUse.Contracts\DesktopComputerUse.Contracts.csproj" />
     <ProjectReference Include="..\..\src\DesktopComputerUse.Automation\DesktopComputerUse.Automation.csproj" />
+    <Compile Include="..\..\src\DesktopComputerUse.Server.Linux\PortableProfileStore.cs" Link="PortableProfileStore.cs" />
   </ItemGroup>
 
   <Target Name="RemoveWindowsDesktopRuntimeOnNonWindows" BeforeTargets="GenerateBuildRuntimeConfigurationFiles" Condition="'$(OS)' != 'Windows_NT'">

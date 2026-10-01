@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Text.Json;
 using DesktopComputerUse.Automation;
 using DesktopComputerUse.Contracts.Automation;
 using DesktopComputerUse.Contracts.Discovery;
@@ -25,8 +26,7 @@ public sealed class ControlTools
             cancellationToken);
         if (!result.Succeeded)
         {
-            throw new McpException(
-                $"{result.Error?.Code}: {result.Error?.Message}");
+            throw new McpException(JsonSerializer.Serialize(result.Error));
         }
 
         var capture = result.Value!;

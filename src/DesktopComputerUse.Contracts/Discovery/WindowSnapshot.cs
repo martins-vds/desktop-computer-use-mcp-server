@@ -11,4 +11,9 @@ public sealed record WindowSnapshot(
     RectangleInfo Bounds,
     ViewSignature View,
     IReadOnlyList<ControlSnapshot> Controls,
-    bool IsComplete);
+    bool IsComplete)
+{
+    public bool Partial { get; init; }
+    public bool Truncated { get; init; }
+    public IReadOnlyList<AutomationDiagnostic> Failures { get; init; } = [];
+}

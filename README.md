@@ -34,15 +34,18 @@ The server implements:
 
 The repository also includes a profile builder and an optional GitHub Copilot SDK adapter. The desktop automation server itself does not depend on Copilot.
 
-It intentionally does not expose arbitrary shell commands, PowerShell, executable paths, desktop-wide inspection, coordinate clicking, global typing, or clipboard access.
+It intentionally does not expose arbitrary shell commands, PowerShell, caller-supplied executable paths, desktop-wide UI inspection, or clipboard access. Native mouse/keyboard fallback is default-off and profile-gated, with attached-window geometry, hit testing, and foreground/focus checks.
 
-Image and OCR automation are deferred until qualification against a real application demonstrates that semantic UI Automation is insufficient.
+Semantic UI Automation remains preferred. HWND captures and bounded native input support legacy controls without a usable provider; OCR interpretation is left to the MCP client.
 
 ## Documentation
 
 - [Profile builder guide](docs/profile-builder.md)
 - [Release artifacts and versioning](docs/releases.md)
 - [Azure Artifact Signing setup](docs/artifact-signing.md)
+- [Desktop computer-use feedback remediation plan](docs/desktop-computer-use-feedback-plan.md)
+- [Native desktop fallback, migration, and Windows qualification](docs/native-desktop.md)
+- [Resilient UIA results and structured diagnostics](docs/resilient-uia.md)
 - [Quality analysis](artifacts/quality/QUALITY-ANALYSIS.md)
 
 ## Requirements
@@ -58,6 +61,7 @@ Downloaded release executables are self-contained and do not require a separate 
 Development requirements:
 
 - .NET 8 SDK
+- .NET 10 SDK, Bash, and Python 3 for the quality-analysis tools
 - A Windows host for meaningful UI Automation integration testing
 
 The solution can be cross-built on Linux, but FlaUI actions cannot execute there. The test WinForms fixture compiles as a no-op stub on non-Windows hosts and as the real WinForms application on Windows.
@@ -100,9 +104,16 @@ dotnet publish src/DesktopComputerUse.Server.Linux/DesktopComputerUse.Server.Lin
 Run portable tests:
 
 ```powershell
-dotnet test tests/DesktopComputerUse.Automation.Tests/DesktopComputerUse.Automation.Tests.csproj
-dotnet test tests/DesktopComputerUse.Server.Tests/DesktopComputerUse.Server.Tests.csproj
+bash scripts/install-quality-tools.sh
+bash scripts/run-quality-analysis.sh
 ```
+
+Every quality run includes tests, CRAP analysis using the pinned
+[`microsoft/crap4csharp`](https://github.com/microsoft/crap4csharp) implementation,
+and complete-level Stryker.NET mutation testing. The CRAP gate is strictly below
+20; missing coverage is not treated as a passing score. JSON reports remain under
+`artifacts/quality/`. Windows-only uncovered mutants remain visible rather than
+being excluded.
 
 On an interactive Windows host, build the WinForms fixture and run the integration tests:
 
@@ -174,6 +185,8 @@ An example profile is available at [`profiles/example.application.json`](profile
 ```
 
 Relative executable and working-directory paths are resolved from the profile file's directory. The executable is allowed to be absent when profiles are loaded so profiles can be deployed before applications, but launch fails explicitly until the file exists.
+
+Native input and multiple-instance launches are disabled by default. The example profile makes those defaults explicit; see [native desktop fallback](docs/native-desktop.md) before enabling mouse or keyboard input. Profile edits take effect through `reload_application_profiles`; active sessions retain their original revision until detach/reattach.
 
 Version 1 profiles using `semanticSelectors` remain supported. At runtime they are adapted to one exact version 2 strategy.
 
@@ -352,8 +365,9 @@ Do not redirect server logs to stdout. MCP protocol messages use stdout; the ser
 
 | Tool | Purpose |
 |---|---|
-| `list_application_profiles` | List configured application profiles |
-| `launch_application` | Launch and attach through a selected profile |
+| `list_application_profiles` | List profiles with revisions, timestamps, generations, and file staleness |
+| `reload_application_profiles` | Validate and atomically reload profiles without changing active-session permissions |
+| `launch_application` | Launch with duplicate-process policy and bounded owned-process cleanup |
 | `attach_application` | Verify and attach to an existing process |
 | `detach_application` | Release the active automation session |
 | `get_application_state` | Return process, profile, window, and backend state |
@@ -371,7 +385,16 @@ Do not redirect server logs to stdout. MCP protocol messages use stdout; the ser
 | `set_expanded_state` | Use the ExpandCollapse pattern |
 | `scroll_control` | Use bounded semantic scroll increments |
 | `wait_for_state` | Wait for existence, value, name, enabled, or visibility state |
-| `capture_application_window` | Capture only the attached main window when profile-enabled |
+| `get_desktop_layout` | Return physical virtual-desktop monitor/work-area geometry |
+| `get_window_geometry` | Return authoritative HWND/client bounds, DPI, and state |
+| `restore_window` | Restore the attached window and verify completion |
+| `activate_window` | Request activation and verify foreground ownership |
+| `click_at_point` | Dispatch profile-enabled, bounded native mouse input |
+| `type_text` | Dispatch bounded Unicode text only to verified foreground/focus |
+| `key_press` | Dispatch an allowlisted key chord under keyboard policy |
+| `click_capture_point` | Convert image pixels through a fresh session-bound capture |
+| `capture_application_window_image` | Return an HWND capture as an MCP image with geometry metadata |
+| `capture_application_window` | Deprecated compatibility structured-base64 capture |
 
 The server permits one active application session at a time. This avoids concurrent state-changing actions racing on the same interactive desktop.
 
@@ -402,6 +425,10 @@ Before using a real application:
 - Mark password and sensitive fields with `sensitiveAutomationIds`.
 - Enable screenshots only for profiles that require them.
 - Control and window captures black out password controls and automation IDs listed in `sensitiveAutomationIds`; direct capture of a sensitive control is rejected.
+- Capture fails closed if sensitive-control discovery or geometry cannot be trusted; it never silently falls back to pixels from another process.
+- Native input must be explicitly enabled by the attached profile; mouse input is client-area constrained by default.
+- Keyboard fallback requires verified foreground and process-owned focus. `SendInput` is global and cannot eliminate races during dispatch; avoid concurrent desktop interaction.
+- Profile reload does not silently update an active session's permissions. Detach/reattach after reviewing the new revision.
 - Review stderr audit logs without recording field values.
 - Keep profile directories writable only by trusted administrators or the dedicated automation account.
 - Treat names, help text, labels, OCR, screenshots, and other observed UI content as untrusted data.
@@ -426,6 +453,7 @@ tests/
   DesktopComputerUse.Automation.Tests/
   DesktopComputerUse.Server.Tests/
   DesktopComputerUse.ProfileIntelligence.Tests/
+  DesktopComputerUse.Native.Tests/ Geometry/input/capture broker tests with fake native API
   DesktopComputerUse.TestApp/     Deterministic Windows Forms fixture
 profiles/
   example.application.json
@@ -437,7 +465,7 @@ profiles/
 - The server controls one application session at a time.
 - Hard cancellation cannot interrupt every blocking operating-system UIA call; operations are serialized and use cooperative timeouts.
 - Process attachment verifies executable paths but does not yet enforce Authenticode publisher identity.
-- Owner-drawn controls may require a future bounded image/OCR adapter.
+- Owner-drawn controls may require profile-enabled image/native fallback and application-specific qualification.
 - Fuzzy resolution is diagnostic/shadow-mode and does not silently replace configured selectors for mutations.
 - Copilot structured output used by the optional adapter is isolated behind an SDK API currently marked for evaluation.
 - The initial implementation does not provide remote HTTP transport.

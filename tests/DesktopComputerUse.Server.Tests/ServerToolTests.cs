@@ -78,9 +78,60 @@ public sealed class ServerToolTests
     }
 
     [Fact]
+    public async Task Native_tools_preserve_missing_session_errors_without_dispatch()
+    {
+        var worker = new RecordingWorker();
+        await using var controller = CreateController(new ApplicationProfileStore([]), worker);
+        var geometry = await NativeDesktopTools.GetWindowGeometry(controller, CancellationToken.None);
+        var restore = await NativeDesktopTools.RestoreWindow(controller, CancellationToken.None);
+        var activate = await NativeDesktopTools.ActivateWindow(controller);
+        var click = await NativeDesktopTools.ClickAtPoint(controller, -100, 10);
+        var captureClick = await NativeDesktopTools.ClickCapturePoint(controller, "missing", 1, 2);
+        var type = await NativeDesktopTools.TypeText(controller, "secret", CancellationToken.None);
+        var key = await NativeDesktopTools.KeyPress(controller, "ctrl+s", CancellationToken.None);
+        Assert.All(new[] { geometry.Error, restore.Error, activate.Error, click.Error,
+                captureClick.Error, type.Error, key.Error },
+            error => Assert.Equal(AutomationErrorCode.ApplicationNotAttached, error!.Code));
+        Assert.Equal(7, worker.RunCount);
+        var exception = await Assert.ThrowsAsync<ModelContextProtocol.McpException>(() =>
+            NativeDesktopTools.CaptureApplicationWindowImage(controller, CancellationToken.None));
+        Assert.Contains("No application is currently attached", exception.Message);
+        Assert.DoesNotContain("secret", exception.Message);
+    }
+
+    [Fact]
+    public async Task Reload_tool_preserves_invalid_registry_and_returns_an_explicit_failure()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), $"DesktopComputerUse-ServerReload-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            var path = Path.Combine(directory, "app.application.json");
+            File.WriteAllText(path, System.Text.Json.JsonSerializer.Serialize(CreateProfile("app")));
+            var store = ApplicationProfileStore.LoadFromDirectory(directory);
+            await using var controller = CreateController(store, new RecordingWorker());
+            var valid = await NativeDesktopTools.ReloadApplicationProfiles(controller, CancellationToken.None);
+            Assert.True(valid.Succeeded);
+            Assert.True(valid.Value!.Succeeded);
+            var revision = Assert.Single(controller.ListProfiles()).Revision;
+            File.WriteAllText(path, "{invalid");
+            var invalid = await NativeDesktopTools.ReloadApplicationProfiles(controller, CancellationToken.None);
+            Assert.False(invalid.Succeeded);
+            Assert.Equal(AutomationErrorCode.InvalidProfile, invalid.Error!.Code);
+            Assert.False(invalid.Value!.Succeeded);
+            Assert.Single(invalid.Value.Failures);
+            Assert.Equal(revision, Assert.Single(controller.ListProfiles()).Revision);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
     public void Tool_types_expose_expected_mcp_names_and_structured_content()
     {
-        var discovered = new[] { typeof(ApplicationTools), typeof(ControlTools) }
+        var discovered = new[] { typeof(ApplicationTools), typeof(ControlTools), typeof(NativeDesktopTools) }
             .SelectMany(type => type.GetMethods(BindingFlags.Public | BindingFlags.Static))
             .Select(method => new
             {
@@ -114,14 +165,25 @@ public sealed class ServerToolTests
             "select_control_item",
             "set_expanded_state",
             "scroll_control",
-            "wait_for_state"
+            "wait_for_state",
+            "reload_application_profiles",
+            "get_desktop_layout",
+            "get_window_geometry",
+            "restore_window",
+            "activate_window",
+            "click_at_point",
+            "type_text",
+            "key_press",
+            "click_capture_point",
+            "capture_application_window_image"
         };
 
         Assert.Equal(expectedNames.Order(), discovered.Keys.Order());
         Assert.All(
-            discovered.Values.Where(item => item.Attribute!.Name != "capture_control_image"),
+            discovered.Values.Where(item => item.Attribute!.Name is not ("capture_control_image" or "capture_application_window_image")),
             item => Assert.True(item.Attribute!.UseStructuredContent));
         Assert.False(discovered["capture_control_image"].Attribute!.UseStructuredContent);
+        Assert.False(discovered["capture_application_window_image"].Attribute!.UseStructuredContent);
         Assert.All(
             new[] { typeof(ApplicationTools), typeof(ControlTools) },
             type => Assert.NotNull(type.GetCustomAttribute<McpServerToolTypeAttribute>()));
@@ -138,17 +200,18 @@ public sealed class ServerToolTests
         services
             .AddMcpServer()
             .WithTools<ApplicationTools>()
-            .WithTools<ControlTools>();
+            .WithTools<ControlTools>()
+            .WithTools<NativeDesktopTools>();
 
         using var provider = services.BuildServiceProvider();
         var tools = provider.GetServices<McpServerTool>()
             .ToDictionary(tool => tool.ProtocolTool.Name, StringComparer.Ordinal);
 
-        Assert.Equal(20, tools.Count);
+        Assert.Equal(30, tools.Count);
         AssertSchemaProperties(
             tools["launch_application"],
             required: ["profileId"],
-            properties: ["profileId"]);
+            properties: ["ifAlreadyRunning", "onLaunchFailure", "profileId"]);
         AssertSchemaProperties(
             tools["set_control_value"],
             required: ["selector", "value"],
@@ -169,6 +232,10 @@ public sealed class ServerToolTests
             tools["capture_control_image"],
             required: ["selector"],
             properties: ["selector"]);
+        AssertSchemaProperties(tools["click_at_point"], required: ["x", "y"],
+            properties: ["button", "coordinateSpace", "x", "y"]);
+        AssertSchemaProperties(tools["click_capture_point"], required: ["captureId", "x", "y"],
+            properties: ["button", "captureId", "x", "y"]);
     }
 
     [Fact]

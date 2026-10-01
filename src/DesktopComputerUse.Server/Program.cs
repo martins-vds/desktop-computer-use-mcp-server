@@ -5,12 +5,18 @@ using DesktopComputerUse.Automation.Discovery;
 using DesktopComputerUse.Automation.Resolution;
 using DesktopComputerUse.Automation.Selectors;
 using DesktopComputerUse.Automation.Threading;
+using DesktopComputerUse.Automation.Windows;
 using DesktopComputerUse.Server.Tools;
 using DesktopComputerUse.Server.Prompts;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Server;
+
+if (OperatingSystem.IsWindows())
+{
+    Win32DesktopApi.InitializePerMonitorV2();
+}
 
 var builder = Host.CreateApplicationBuilder(args);
 
@@ -41,6 +47,7 @@ builder.Services
     .WithStdioServerTransport()
     .WithTools<ApplicationTools>()
     .WithTools<ControlTools>()
+    .WithTools<NativeDesktopTools>()
     .WithPrompts<ProfilePrompts>();
 
 await builder.Build().RunAsync();

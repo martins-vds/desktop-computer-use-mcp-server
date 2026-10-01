@@ -10,4 +10,9 @@ public sealed record ControlSummary(
     RectangleInfo Bounds,
     string? Value,
     bool IsValueRedacted,
-    IReadOnlyList<string> SupportedPatterns);
+    IReadOnlyList<string> SupportedPatterns)
+{
+    public IReadOnlyList<AutomationDiagnostic> Failures { get; init; } = [];
+    public bool Partial => Failures.Count > 0;
+    public bool IsPassword { get; init; }
+}

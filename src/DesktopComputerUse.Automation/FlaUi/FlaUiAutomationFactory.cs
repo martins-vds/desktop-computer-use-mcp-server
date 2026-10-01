@@ -8,12 +8,16 @@ namespace DesktopComputerUse.Automation.FlaUi;
 public sealed class FlaUiAutomationFactory
 {
     public AutomationBase Create(AutomationBackend backend)
-        => backend switch
+    {
+        if (backend == AutomationBackend.Uia2)
         {
-            AutomationBackend.Uia2 => new UIA2Automation(),
-            AutomationBackend.Uia3 => new UIA3Automation(),
-            _ => throw new AutomationOperationException(
-                AutomationErrorCode.InvalidProfile,
-                $"Unsupported automation backend '{backend}'.")
-        };
+            return new UIA2Automation();
+        }
+        if (backend == AutomationBackend.Uia3)
+        {
+            return new UIA3Automation();
+        }
+        throw new AutomationOperationException(AutomationErrorCode.InvalidProfile,
+            $"Unsupported automation backend '{backend}'.");
+    }
 }
