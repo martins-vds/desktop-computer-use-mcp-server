@@ -26,9 +26,14 @@ public sealed class CapturePrivacyTests
     [InlineData(-2147483648, 0, 4294967295, 1)]
     [InlineData(0, -2147483648, 1, 4294967295)]
     public void Unmappable_sensitive_bounds_fail_closed(double x, double y, double width, double height)
-        => Assert.Equal(NativeFailureCode.SensitiveGeometryUnavailable,
-            Assert.Throws<NativeOperationException>(() =>
-                CapturePrivacy.ToPhysicalRegion(new RectangleInfo(x, y, width, height))).Code);
+    {
+        var exception = Assert.Throws<NativeOperationException>(() =>
+            CapturePrivacy.ToPhysicalRegion(new RectangleInfo(x, y, width, height)));
+        Assert.Equal(NativeFailureCode.SensitiveGeometryUnavailable, exception.Code);
+        Assert.Equal("captureWindow", exception.Operation);
+        Assert.Equal("mapRedactions", exception.Phase);
+        Assert.Equal("A sensitive region has no finite, valid physical bounds.", exception.Message);
+    }
 
     [Fact]
     public void Collects_sensitive_root_and_descendants_without_reading_other_bounds()

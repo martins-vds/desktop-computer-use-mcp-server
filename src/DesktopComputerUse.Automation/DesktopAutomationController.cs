@@ -388,6 +388,17 @@ public sealed partial class DesktopAutomationController : IAsyncDisposable
         CancellationToken cancellationToken)
         => FindControlAsync(selector, cancellationToken);
 
+    public Task<AutomationResult<ControlValueResult>> GetControlValueAsync(
+        ControlSelector selector,
+        CancellationToken cancellationToken)
+        => ExecuteWithSessionAsync(cancellationToken, (session, token) =>
+        {
+            var matches = FindMatches(session, selector, token);
+            var value = ControlValueReader.Read(UniqueElement(session, matches), session.Profile);
+            var failures = (matches as ControlSelectorMatchResult)?.Failures ?? [];
+            return value with { Failures = value.Failures.Concat(failures).Take(100).ToArray() };
+        });
+
     public Task<AutomationResult<ControlTreeNode>> InspectControlsAsync(
         ControlSelector? rootSelector,
         int? maxDepth,
@@ -523,7 +534,7 @@ public sealed partial class DesktopAutomationController : IAsyncDisposable
                     throw Unsupported("Invoke", element);
                 }
 
-                pattern.Invoke();
+                ProviderActionExecutor.Execute("invoke", "Invoke", pattern.Invoke);
             });
 
     public Task<AutomationResult<ActionResult>> SetValueAsync(
@@ -548,7 +559,7 @@ public sealed partial class DesktopAutomationController : IAsyncDisposable
                         "The selected control exposes a read-only Value pattern.");
                 }
 
-                pattern.SetValue(value);
+                ProviderActionExecutor.Execute("set_value", "Value.SetValue", () => pattern.SetValue(value));
             });
 
     public Task<AutomationResult<ActionResult>> SelectAsync(
@@ -865,7 +876,9 @@ public sealed partial class DesktopAutomationController : IAsyncDisposable
         {
             throw new AutomationOperationException(
                 AutomationErrorCode.ControlNotFound,
-                "No control matched the selector within the attached application window.");
+                "No readable control matched the selector within the attached application window.",
+                diagnostic: new AutomationDiagnostic { Operation = "resolveSelector", Phase = "match" },
+                failures: (matches as ControlSelectorMatchResult)?.Failures);
         }
 
         if (matches.Count > 1)
@@ -909,19 +922,21 @@ public sealed partial class DesktopAutomationController : IAsyncDisposable
         }
 
         ThrowIfSearchIncomplete(matchSets);
-        return [];
+        return new ControlSelectorMatchResult([], matchSets.SelectMany(matches => matches.Failures).Take(100).ToArray(), false);
     }
 
     private static ControlSelectorMatchResult? SelectMatchSet(IReadOnlyList<ControlSelectorMatchResult> matchSets)
-        => matchSets.FirstOrDefault(matches => CompleteUniqueMatch(matches.Count, matches.Truncated))
+        => matchSets.FirstOrDefault(matches => CompleteUniqueMatch(matches.Count, !matches.IsComplete))
             ?? matchSets.FirstOrDefault(matches => matches.Count > 1);
 
     internal static bool CompleteUniqueMatch(int count, bool truncated) => count == 1 && !truncated;
 
-    private static void ThrowIfSearchIncomplete(IReadOnlyList<ControlSelectorMatchResult> matchSets)
+    internal static void ThrowIfSearchIncomplete(IReadOnlyList<ControlSelectorMatchResult> matchSets)
     {
         var failures = matchSets.SelectMany(matches => matches.Failures).Take(100).ToArray();
-        if (SearchIncomplete(failures.Length, matchSets.Any(matches => matches.Truncated)))
+        if (SearchIncomplete(
+            matchSets.Sum(matches => matches.Failures.Count(failure => failure.Phase == "enumerateChildren")),
+            matchSets.Any(matches => matches.Truncated)))
         {
             throw new AutomationOperationException(AutomationErrorCode.ProviderFailure,
                 "Selector resolution was incomplete. Inspect the partial diagnostics or use qualified native fallback.",
@@ -972,7 +987,7 @@ public sealed partial class DesktopAutomationController : IAsyncDisposable
         AutomationElement element)
         => new(
             AutomationErrorCode.UnsupportedPattern,
-            $"Control '{element.AutomationId ?? element.Name}' does not support the {pattern} pattern.");
+            $"The selected control does not support the {pattern} pattern.");
 
     private static void EnsureWindows()
     {
@@ -1035,6 +1050,7 @@ public sealed partial class DesktopAutomationController : IAsyncDisposable
             session.Application.HasExited ? null : _observer.Observe(session.MainWindow, session.Profile).Name,
             session.Profile.Backend)
         {
+            PrivacyMode = session.Profile.PrivacyMode,
             ProfileRevision = session.Profile.Metadata?.Revision,
             ProfileGeneration = LoadedGeneration(session.Profile),
             ProfileIsStale = SessionProfileIsStale(session.Profile),
@@ -1169,8 +1185,8 @@ public sealed partial class DesktopAutomationController : IAsyncDisposable
     private static bool IsSensitiveElement(
         AutomationElement element,
         ApplicationProfile profile)
-        => SafeIsPassword(element) ||
-            SafeHasSensitiveAutomationId(element, profile);
+        => profile.PrivacyMode && (SafeIsPassword(element) ||
+            SafeHasSensitiveAutomationId(element, profile));
 
     private static bool SafeIsPassword(AutomationElement element)
     {

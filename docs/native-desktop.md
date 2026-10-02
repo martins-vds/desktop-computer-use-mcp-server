@@ -36,6 +36,7 @@ Native input is disabled unless the attached profile explicitly enables it:
   "allowedMouseButtons": ["left"],
   "constrainTo": "clientArea",
   "requireForeground": true,
+  "activateBeforeInput": false,
   "maximumTextLength": 500,
   "allowSystemKeys": false
 }
@@ -61,6 +62,30 @@ treating a queued restore request as success. `activate_window` reports failure
 when Windows foreground-lock policy denies activation. No permanent topmost
 state is imposed.
 
+### Optional activation before native input
+
+Set `nativeInput.activateBeforeInput: true` in the attached profile to attempt
+foreground activation before each native mouse or keyboard operation when the
+target is not already foreground. This permission defaults to false and requires
+`requireForeground: true`; it does not enable native input or keyboard permission.
+Detach and reattach after changing the profile.
+
+The broker makes one activation request using the existing verified-target
+`BringWindowToTop`/`SetForegroundWindow` path and polls the foreground postcondition
+within its lifecycle timeout (two seconds by default, ten seconds maximum).
+It does not inject fake user input, attach thread input queues, request permanent
+topmost state, or bypass Windows foreground-lock restrictions. Activation denial
+returns `WindowActivationFailed` without dispatching input. This is a best-effort
+request, not a guarantee of focus across a conversational sequence.
+
+Activation does not restore a minimized window implicitly: restore it explicitly
+first. After activation, mouse geometry, confinement, and hit ownership are still
+checked; keyboard foreground, focus, and process/window ownership remain mandatory
+immediately before dispatch and are checked again afterward. Cancellation before
+dispatch prevents input. Failed or partial dispatch and postdispatch focus loss
+never trigger automatic reactivation or input retries; input may already have
+occurred, so inspect the application state before deciding what to do next.
+
 ## Captures
 
 `capture_application_window_image` returns an MCP image plus JSON metadata; hosts
@@ -69,10 +94,15 @@ can render the image without manually decoding a structured base64 result.
 compatibility and is deprecated. Its image is in `value.base64Data`, with
 `value.mimeType`, `value.width`, and `value.height`.
 
-Captures still require `enableScreenshots: true`. Password fields and
+Captures still require `enableScreenshots: true`. With `privacyMode: true`
+(the default), password fields and
 `sensitiveAutomationIds` are redacted. If enumeration, sensitivity, or sensitive
 bounds cannot be established, capture fails closed rather than returning an
-unredacted image. HWND capture does not silently fall back to desktop pixels.
+unredacted image. An explicit `privacyMode: false` profile instead allows
+unredacted values and images and skips UIA sensitivity discovery; image metadata
+identifies this mode. It does not disable screenshot authorization or window
+confinement. Reload and detach/reattach to adopt a changed privacy policy.
+HWND capture does not silently fall back to desktop pixels.
 Provider support varies across legacy/custom/GPU-rendered applications;
 a successful native capture call is not proof that the application's provider
 rendered every control faithfully. Minimized windows must be restored before

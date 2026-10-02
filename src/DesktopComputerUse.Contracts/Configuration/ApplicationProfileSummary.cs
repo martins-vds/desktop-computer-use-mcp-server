@@ -9,6 +9,8 @@ public sealed record ApplicationProfileSummary(
     AutomationBackend Backend,
     bool EnableScreenshots)
 {
+    public bool PrivacyMode { get; init; } = true;
+
     public string? SourceFile { get; init; }
 
     public string? Revision { get; init; }

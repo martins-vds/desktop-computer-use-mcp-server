@@ -10,6 +10,20 @@ namespace DesktopComputerUse.Server.Linux.Tests;
 
 public sealed class PortableProfileStoreTests
 {
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void Profile_listing_exposes_privacy_mode_and_reload_adopts_only_valid_policy(bool privacy)
+    {
+        using var directory = new TestDirectory();
+        Write(directory, Profile("one") with { PrivacyMode = privacy });
+        var store = PortableProfileStore.LoadFromDirectory(directory.Path);
+        Assert.Equal(privacy, Assert.Single(store.List()).PrivacyMode);
+        Write(directory, Profile("one") with { PrivacyMode = !privacy });
+        Assert.True(store.Reload().Succeeded);
+        Assert.Equal(!privacy, Assert.Single(store.List()).PrivacyMode);
+    }
+
     [Fact]
     public void Reload_is_atomic_and_publishes_revisions_and_staleness()
     {

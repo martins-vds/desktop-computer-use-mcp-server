@@ -58,6 +58,11 @@ public sealed class LinuxControlTools
     public static AutomationResult<ControlSummary> GetControlProperties(ControlSelector selector)
         => Unsupported<ControlSummary>();
 
+    [McpServerTool(Name = "get_control_value", UseStructuredContent = true)]
+    [Description(PlatformMessage)]
+    public static AutomationResult<ControlValueResult> GetControlValue(ControlSelector selector)
+        => Unsupported<ControlValueResult>();
+
     [McpServerTool(Name = "invoke_control", UseStructuredContent = true)]
     [Description(PlatformMessage)]
     public static AutomationResult<ActionResult> InvokeControl(ControlSelector selector)

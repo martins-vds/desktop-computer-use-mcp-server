@@ -90,6 +90,80 @@ public sealed class FuzzyControlResolverDiagnosticsTests
         Assert.True(result.Partial);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Password_detection_failure_only_blocks_candidates_when_snapshot_privacy_is_enabled(bool privacyMode)
+    {
+        var failure = new AutomationDiagnostic
+        {
+            CandidateId = "save", Property = "IsPassword", Phase = "readProperty",
+            Code = AutomationErrorCode.PropertyNotSupported
+        };
+        var snapshot = SnapshotFixtures.Application(
+            [SnapshotFixtures.Control("save", automationId: "SaveButton") with { Failures = [failure] }])
+            with { PrivacyMode = privacyMode };
+        var result = _resolver.Resolve(snapshot, "save", Target() with
+        {
+            Strategies = [new() { AutomationId = "SaveButton" }]
+        });
+        Assert.Equal(privacyMode ? ResolutionStatus.NotFound : ResolutionStatus.Resolved, result.Status);
+        Assert.Equal(privacyMode ? null : "save", result.SelectedCandidateId);
+        Assert.Same(failure, Assert.Single(result.Failures));
+    }
+
+    [Fact]
+    public void Privacy_disabled_password_failure_does_not_block_fuzzy_or_nested_exact_resolution()
+    {
+        var failure = new AutomationDiagnostic
+        {
+            CandidateId = "save", Property = "IsPassword", Phase = "readProperty",
+            Code = AutomationErrorCode.PropertyNotSupported
+        };
+        var snapshot = SnapshotFixtures.Application(
+        [
+            SnapshotFixtures.Control("form", controlType: "Pane", name: "Form"),
+            SnapshotFixtures.Control("save", name: "Save", automationId: "SaveButton", parentCandidateId: "form")
+                with { Failures = [failure] }
+        ]) with { PrivacyMode = false };
+        var scored = _resolver.Resolve(snapshot, "save", Target());
+        Assert.Equal(ResolutionStatus.Resolved, scored.Status);
+        Assert.Equal("save", scored.SelectedCandidateId);
+        var nested = _resolver.Resolve(snapshot, "save", Target() with
+        {
+            Strategies = [new() { AutomationId = "SaveButton", Ancestor = new() { Name = "Form" } }]
+        });
+        Assert.Equal(ResolutionStatus.Resolved, nested.Status);
+        Assert.Equal("save", nested.SelectedCandidateId);
+        Assert.Same(failure, Assert.Single(nested.Failures));
+    }
+
+    [Theory]
+    [InlineData("AutomationId")]
+    [InlineData("Name")]
+    [InlineData("ClassName")]
+    [InlineData("ControlType")]
+    [InlineData("IsEnabled")]
+    [InlineData("IsOffscreen")]
+    [InlineData("Patterns.Value")]
+    public void Privacy_disabled_does_not_waive_identity_safety_or_required_pattern_failures(string property)
+    {
+        var failure = new AutomationDiagnostic { CandidateId = "save", Property = property };
+        var snapshot = SnapshotFixtures.Application(
+        [
+            SnapshotFixtures.Control("save", name: "Save", automationId: "SaveButton", className: "TextBox",
+                supportedPatterns: ["Value"]) with { Failures = [failure] }
+        ]) with { PrivacyMode = false };
+        var result = _resolver.Resolve(snapshot, "save", Target() with
+        {
+            RequiredPatterns = ["Value"],
+            Strategies = [new() { AutomationId = "SaveButton", Name = "Save", ClassName = "TextBox", ControlType = "Edit" }]
+        });
+        Assert.Equal(ResolutionStatus.NotFound, result.Status);
+        Assert.Null(result.SelectedCandidateId);
+        Assert.Same(failure, Assert.Single(result.Failures));
+    }
+
     [Fact]
     public void Snapshot_and_control_diagnostics_are_deduplicated_without_dropping_candidate()
     {

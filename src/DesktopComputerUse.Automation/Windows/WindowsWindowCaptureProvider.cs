@@ -75,7 +75,7 @@ public sealed class WindowsWindowCaptureProvider : IWindowCaptureProvider
         ValidateCaptureState(target, geometry);
         var source = geometry.WindowBounds;
         var transform = new CapturePixelTransform(source, source.Width, source.Height);
-        var redactions = MapRedactions(target, options.SensitiveRegions, transform);
+        var redactions = options.PrivacyMode ? MapRedactions(target, options.SensitiveRegions, transform) : [];
         cancellationToken.ThrowIfCancellationRequested();
         var buffer = RequirePixels(target, pixels.TryPrintWindow(target, source), options.AllowScreenFallback);
         cancellationToken.ThrowIfCancellationRequested();
@@ -85,7 +85,10 @@ public sealed class WindowsWindowCaptureProvider : IWindowCaptureProvider
         var image = EncodeImage(target, buffer, redactions);
         cancellationToken.ThrowIfCancellationRequested();
         RegisterToken(token);
-        return new(image, "image/png", "PrintWindow(PW_RENDERFULLCONTENT)", true, token, redactions.Length);
+        return new(image, "image/png", "PrintWindow(PW_RENDERFULLCONTENT)", true, token, redactions.Length)
+        {
+            PrivacyMode = options.PrivacyMode
+        };
     }
 
     private static void ValidateOptions(NativeWindowTarget target, NativeCaptureOptions options)
@@ -98,8 +101,8 @@ public sealed class WindowsWindowCaptureProvider : IWindowCaptureProvider
     }
     private static void ValidateSensitiveGeometry(NativeWindowTarget target, NativeCaptureOptions options)
     {
-        if (!options.SensitiveGeometryComplete || options.SensitiveRegions is null ||
-            options.SensitiveRegions.Any(region => region is null || region.Bounds is null))
+        if (options.SensitiveRegions is null || options.PrivacyMode &&
+            (!options.SensitiveGeometryComplete || options.SensitiveRegions.Any(region => region is null || region.Bounds is null)))
             throw Failure(NativeFailureCode.SensitiveGeometryUnavailable, target, "redact", "Complete sensitive-control geometry is required.");
     }
     private static void ValidateGeneration(NativeWindowTarget target, NativeCaptureGeneration generation)

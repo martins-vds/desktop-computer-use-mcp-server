@@ -12,6 +12,7 @@
   "maxTreeDepth": 6,
   "maxResults": 300,
   "enableScreenshots": false,
+  "privacyMode": true,
   "allowMultipleInstances": false,
   "nativeInput": {
     "enabled": false,
@@ -20,6 +21,7 @@
     "allowedMouseButtons": ["left"],
     "constrainTo": "clientArea",
     "requireForeground": true,
+    "activateBeforeInput": false,
     "maximumTextLength": 500,
     "allowSystemKeys": false
   },

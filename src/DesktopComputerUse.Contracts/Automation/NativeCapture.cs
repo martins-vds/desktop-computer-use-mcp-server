@@ -2,11 +2,12 @@ namespace DesktopComputerUse.Contracts.Automation;
 
 public sealed record NativeCaptureGeneration(string SessionId, string ProfileRevision, long WindowGeneration);
 
-/// <summary>Caller must enumerate all known sensitive descendants, even when their bounds cannot be read.</summary>
+/// <summary>In privacy mode, callers must enumerate all sensitive descendants even when bounds cannot be read.</summary>
 public sealed record SensitiveCaptureRegion(PhysicalScreenRect? Bounds);
 
 public sealed record NativeCaptureOptions
 {
+    public bool PrivacyMode { get; init; } = true;
     public bool EnableScreenshots { get; init; }
     public bool AllowScreenFallback { get; init; }
     public bool SensitiveGeometryComplete { get; init; }
@@ -24,6 +25,7 @@ public sealed record NativeWindowCapture(
     byte[] ImageBytes, string MimeType, string Method, bool OcclusionSafe,
     NativeCaptureToken Token, int RedactedControlCount)
 {
+    public bool PrivacyMode { get; init; } = true;
     public uint Dpi => Token.Geometry.Dpi;
     public PhysicalScreenRect SourceScreenRect => Token.Transform.SourceRect;
     public int ImageWidth => Token.Transform.ImageWidth;

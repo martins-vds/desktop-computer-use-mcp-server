@@ -74,23 +74,81 @@ public sealed class ControlSelectorResolver
         int maxNodes = 10000,
         CancellationToken cancellationToken = default)
     {
-        ValidateSearch(selector, maxResults, maxAncestorDepth, maxNodes);
-        var result = FindCandidates(root, element => element.FindAllChildren(),
-            (element, reader) => Matches(element, selector, maxAncestorDepth, reader),
-            maxResults, maxNodes, cancellationToken);
-        return new(ApplyIndex(result.Matches, selector.Index), result.Failures, result.Truncated);
+        var result = FindSelectorCandidates([root], selector, element => element.FindAllChildren(),
+            MatchesWithoutAncestor, maxResults, maxAncestorDepth, maxNodes, cancellationToken);
+        return new(result.Matches, result.Failures, result.Truncated);
     }
 
     internal static void ValidateSearch(
         ControlSelector selector, int maxResults, int maxAncestorDepth, int maxNodes)
     {
-        EnsureSelector(selector);
         ArgumentOutOfRangeException.ThrowIfLessThan(maxResults, 1);
         ArgumentOutOfRangeException.ThrowIfLessThan(maxNodes, 1);
         ArgumentOutOfRangeException.ThrowIfNegative(maxAncestorDepth);
-        _ = TryParseControlType(selector.ControlType, out _);
-        if (selector.Ancestor is not null)
-            _ = TryParseControlType(selector.Ancestor.ControlType, out _);
+        for (var stage = selector; stage is not null; stage = stage.Ancestor)
+        {
+            EnsureSelector(stage);
+            _ = TryParseControlType(stage.ControlType, out _);
+        }
+    }
+
+    internal static SelectorCandidateMatchResult<T> FindSelectorCandidates<T>(
+        T[] roots,
+        ControlSelector selector,
+        Func<T, T[]> getChildren,
+        Func<T, ControlSelector, SafeAutomationElementReader, bool> matchesCandidate,
+        int maxResults,
+        int maxAncestorDepth,
+        int maxNodes,
+        CancellationToken cancellationToken = default)
+    {
+        ValidateSearch(selector, maxResults, maxAncestorDepth, maxNodes);
+        if (selector.Ancestor is null)
+        {
+            var unscoped = FindCandidatesCore(roots, getChildren,
+                (element, reader, _) => (null, ReadCandidate(element, reader,
+                    (candidate, safeReader) => matchesCandidate(candidate, selector, safeReader)).Length > 0),
+                maxResults, maxNodes, cancellationToken);
+            return unscoped with { Matches = ApplyIndex(unscoped.Matches, selector.Index).ToArray() };
+        }
+        var stages = new List<ControlSelector>();
+        for (var stage = selector; stage is not null; stage = stage.Ancestor)
+            stages.Add(stage);
+        stages.Reverse();
+        var counts = new int[stages.Count];
+        var result = FindCandidatesCore(roots, getChildren, (element, reader, parent) =>
+        {
+            var scope = new CandidateScope(parent, new bool[stages.Count]);
+            for (var i = 0; i < stages.Count; i++)
+            {
+                if (i > 0 && !scope.HasSelectedAncestor(i - 1, maxAncestorDepth))
+                    continue;
+                var failuresBefore = reader.Failures.Count;
+                if (!matchesCandidate(element, stages[i], reader) || reader.Failures.Count != failuresBefore)
+                    continue;
+                var index = counts[i]++;
+                scope.Selected[i] = i == stages.Count - 1 ||
+                    stages[i].Index is not int requested || index == requested;
+            }
+            // Count raw outer matches before applying its index, preserving result-limit safety.
+            // Ancestor indices select scopes during the traversal.
+            return (scope, scope.Selected[^1]);
+        }, maxResults, maxNodes, cancellationToken);
+        return result with { Matches = ApplyIndex(result.Matches, selector.Index).ToArray() };
+    }
+
+    private sealed class CandidateScope(CandidateScope? parent, bool[] selected)
+    {
+        public bool[] Selected { get; } = selected;
+        public CandidateScope? Parent { get; } = parent;
+
+        public bool HasSelectedAncestor(int stage, int remainingDepth)
+        {
+            for (var ancestor = Parent; ancestor is not null && remainingDepth-- > 0; ancestor = ancestor.Parent)
+                if (ancestor.Selected[stage])
+                    return true;
+            return false;
+        }
     }
 
     internal static SelectorCandidateMatchResult<T> FindCandidates<T>(
@@ -100,30 +158,44 @@ public sealed class ControlSelectorResolver
         int maxResults,
         int maxNodes,
         CancellationToken cancellationToken = default)
+        => FindCandidatesCore([root], getChildren,
+            (element, reader, _) => (null, ReadCandidate(element, reader, matchesCandidate).Length > 0),
+            maxResults, maxNodes, cancellationToken);
+
+    private static SelectorCandidateMatchResult<T> FindCandidatesCore<T>(
+        T[] roots,
+        Func<T, T[]> getChildren,
+        Func<T, SafeAutomationElementReader, CandidateScope?, (CandidateScope? Scope, bool Matches)> evaluate,
+        int maxResults,
+        int maxNodes,
+        CancellationToken cancellationToken)
     {
         var failures = new List<AutomationDiagnostic>();
         var matches = new List<T>();
-        var pending = new Stack<(T Element, int Depth)>();
-        pending.Push((root, 0));
+        var pending = new Stack<(T Element, int Depth, CandidateScope? Parent)>();
+        foreach (var root in roots.Take(maxNodes).Reverse())
+            pending.Push((root, 0, null));
         var visited = 0;
-        var truncated = false;
+        var truncated = roots.Length > maxNodes;
         var context = new AutomationDiagnostic { Operation = "resolveSelector" };
         while (CanContinue(pending.Count, matches.Count, maxResults))
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var (element, depth) = pending.Pop();
+            var (element, depth, parent) = pending.Pop();
             var reader = new SafeAutomationElementReader(context with
             {
                 CandidateId = $"node-{++visited:0000}", Depth = depth
             }, failures);
-            matches.AddRange(ReadCandidate(element, reader, matchesCandidate));
+            var (scope, matched) = evaluate(element, reader, parent);
+            if (matched)
+                matches.Add(element);
             if (matches.Count > maxResults)
             {
                 truncated = true;
                 break;
             }
             var children = reader.ReadChildren(() => getChildren(element));
-            truncated |= QueueChildren(pending, children, depth + 1, maxNodes - visited - pending.Count);
+            truncated |= QueueChildren(pending, children, depth + 1, scope, maxNodes - visited - pending.Count);
         }
         return new(matches.ToArray(), failures, IsTruncated(truncated, pending.Count));
     }
@@ -141,10 +213,11 @@ public sealed class ControlSelectorResolver
         return matches(element, reader) && reader.Failures.Count == before ? [element] : [];
     }
 
-    private static bool QueueChildren<T>(Stack<(T Element, int Depth)> pending, T[] children, int depth, int capacity)
+    private static bool QueueChildren<T>(Stack<(T Element, int Depth, CandidateScope? Parent)> pending,
+        T[] children, int depth, CandidateScope? parent, int capacity)
     {
         foreach (var child in children.Take(capacity).Reverse())
-            pending.Push((child, depth));
+            pending.Push((child, depth, parent));
         return children.Length > capacity;
     }
     private static void EnsureSelector(ControlSelector selector)
@@ -164,18 +237,6 @@ public sealed class ControlSelectorResolver
 
     private static IReadOnlyList<T> SelectIndex<T>(T[] candidates, int index)
         => index >= 0 && index < candidates.Length ? [candidates[index]] : [];
-
-    private static bool Matches(
-        AutomationElement element,
-        ControlSelector selector,
-        int maxAncestorDepth,
-        SafeAutomationElementReader reader)
-    {
-        return MatchesWithoutAncestor(element, selector, reader) &&
-            (selector.Ancestor is null ||
-             HasMatchingAncestor(element, maxAncestorDepth, reader, ancestor => ancestor.Parent,
-                 (ancestor, safeReader) => MatchesWithoutAncestor(ancestor, selector.Ancestor, safeReader)));
-    }
 
     internal static bool HasMatchingAncestor<T>(
         T element,

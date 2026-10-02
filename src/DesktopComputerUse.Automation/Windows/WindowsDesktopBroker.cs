@@ -66,6 +66,7 @@ public sealed class WindowsDesktopBroker
                 throw Failure(NativeFailureCode.InvalidArgument, "typeText", "validateText", target, "Text must be bounded, well-formed Unicode without control characters.");
             await PrepareAsync(target, policy, cancellationToken);
             VerifyKeyboard(target);
+            cancellationToken.ThrowIfCancellationRequested();
             var count = api.SendUnicode(text);
             if (count != checked((uint)text.Length * 2))
                 throw Failure(NativeFailureCode.InputDispatchFailed, "typeText", "sendInput", target, "Input was not completely dispatched; partial input may have occurred.", count);
@@ -80,6 +81,7 @@ public sealed class WindowsDesktopBroker
             var keys = NativeKeyChords.Parse(chord, policy.AllowSystemKeys);
             await PrepareAsync(target, policy, cancellationToken);
             VerifyKeyboard(target);
+            cancellationToken.ThrowIfCancellationRequested();
             var count = api.SendKeys(keys);
             if (count != keys.Count * 2)
                 throw Failure(NativeFailureCode.InputDispatchFailed, "keyPress", "sendInput", target, "Input was not completely dispatched; partial input may have occurred.", count);
@@ -186,6 +188,7 @@ public sealed class WindowsDesktopBroker
         var geometry = api.GetGeometry(target);
         RequireActivationState(geometry);
         if (api.IsForeground(target)) return false;
+        cancellationToken.ThrowIfCancellationRequested();
         api.TryActivate(target);
         if (!await PollAsync(() => api.IsForeground(target), cancellationToken))
             throw Failure(NativeFailureCode.WindowActivationFailed, "activateWindow", "verifyForeground", target, "Windows did not grant foreground activation.");
@@ -226,6 +229,8 @@ public sealed class WindowsDesktopBroker
             throw Failure(NativeFailureCode.ForegroundRequired, "keyboard", "verifyForeground", target, "Target is not usable and foreground.");
         if (!api.HasOwnedKeyboardFocus(target))
             throw Failure(NativeFailureCode.ForeignKeyboardFocus, "keyboard", "verifyFocus", target, "Keyboard focus is not owned by the attached window/process.");
+        if (!api.IsForeground(target))
+            throw Failure(NativeFailureCode.ForegroundRequired, "keyboard", "verifyForeground", target, "Target lost foreground during keyboard focus verification.");
     }
 
     private void VerifyKeyboardAfterDispatch(NativeWindowTarget target, uint count)
@@ -249,7 +254,8 @@ public sealed class WindowsDesktopBroker
         if (!policy.Enabled || (keyboard ? !policy.AllowKeyboard : !policy.AllowMouse))
             throw new NativeOperationException(NativeFailureCode.RawInputDisabled, "nativeInput", "authorize", "Native input capability is disabled.");
         if (!Enum.IsDefined(policy.ConstrainTo) || policy.AllowedMouseButtons is null ||
-            policy.MaximumTextLength is < 1 or > 10000 || (policy.AllowKeyboard && !policy.RequireForeground))
+            policy.MaximumTextLength is < 1 or > 10000 ||
+            ((policy.AllowKeyboard || policy.AllowActivate) && !policy.RequireForeground))
             throw new NativeOperationException(NativeFailureCode.InvalidArgument, "nativeInput", "validatePolicy", "Native operation policy is invalid.");
     }
 

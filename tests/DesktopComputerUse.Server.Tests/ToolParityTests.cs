@@ -9,6 +9,27 @@ namespace DesktopComputerUse.Server.Tests;
 public sealed class ToolParityTests
 {
     [Fact]
+    public void Linux_value_read_tool_returns_explicit_platform_failure()
+    {
+        var context = new AssemblyLoadContext("LinuxValueRead", isCollectible: true);
+        try
+        {
+            var linux = context.LoadFromAssemblyPath(
+                Path.Combine(AppContext.BaseDirectory, "Linux", "desktop-computer-use.dll"));
+            var method = Discover(linux)["get_control_value"];
+            var result = Assert.IsType<AutomationResult<ControlValueResult>>(
+                method.Invoke(null, [new ControlSelector { AutomationId = "field" }]));
+            Assert.False(result.Succeeded);
+            Assert.Null(result.Value);
+            Assert.Equal(AutomationErrorCode.PlatformNotSupported, result.Error!.Code);
+        }
+        finally
+        {
+            context.Unload();
+        }
+    }
+
+    [Fact]
     public void Linux_and_windows_expose_identical_tool_names_and_client_parameters()
     {
         var context = new AssemblyLoadContext("LinuxToolParity", isCollectible: true);

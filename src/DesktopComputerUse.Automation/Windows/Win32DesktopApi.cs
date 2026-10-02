@@ -52,9 +52,10 @@ public sealed class Win32DesktopApi : IWindowsDesktopApi
     public bool TryActivate(NativeWindowTarget target)
     {
         var hwnd = Validate(target);
+        if (IsForeground(target)) return true;
         // Do not bypass foreground-lock restrictions or change topmost state.
         BringWindowToTop(hwnd);
-        SetForegroundWindow(hwnd);
+        SetForegroundWindow(Validate(target));
         return IsForeground(target);
     }
 

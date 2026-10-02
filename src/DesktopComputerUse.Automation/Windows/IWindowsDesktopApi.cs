@@ -8,6 +8,10 @@ public interface IWindowsDesktopApi
     NativeDesktopLayout GetDesktopLayout();
     NativeWindowGeometry GetGeometry(NativeWindowTarget target);
     bool QueueRestore(NativeWindowTarget target);
+    /// <summary>
+    /// Makes one legitimate foreground request for the verified target; never injects input,
+    /// bypasses foreground-lock policy, or imposes topmost state. The broker verifies completion.
+    /// </summary>
     bool TryActivate(NativeWindowTarget target);
     bool IsRestored(NativeWindowTarget target);
     bool IsForeground(NativeWindowTarget target);

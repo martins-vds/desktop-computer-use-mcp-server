@@ -175,7 +175,8 @@ public sealed partial class DesktopAutomationController
         var capture = WindowCaptureProvider.CaptureAsync(target, new NativeCaptureOptions
         {
             EnableScreenshots = session.Profile.EnableScreenshots,
-            SensitiveGeometryComplete = true,
+            PrivacyMode = session.Profile.PrivacyMode,
+            SensitiveGeometryComplete = session.Profile.PrivacyMode,
             SensitiveRegions = sensitiveBounds.Select(bounds => new SensitiveCaptureRegion(
                 CapturePrivacy.ToPhysicalRegion(bounds))).ToArray(),
             Generation = CaptureGeneration(session),
@@ -209,6 +210,7 @@ public sealed partial class DesktopAutomationController
         return new WindowCapture(capture.MimeType, Convert.ToBase64String(capture.ImageBytes),
             capture.ImageWidth, capture.ImageHeight)
         {
+            PrivacyMode = capture.PrivacyMode,
             Method = capture.Method,
             OcclusionSafe = capture.OcclusionSafe,
             Token = capture.Token,
@@ -244,6 +246,7 @@ public sealed partial class DesktopAutomationController
         // A cropped control image deliberately has no clickable full-window capture transform.
         return new WindowCapture("image/png", Convert.ToBase64String(output.ToArray()), cropped.Width, cropped.Height)
         {
+            PrivacyMode = capture.PrivacyMode,
             Method = capture.Method + "/controlCrop",
             OcclusionSafe = true,
             RedactedControlCount = capture.RedactedControlCount
@@ -276,8 +279,10 @@ public sealed partial class DesktopAutomationController
         => new(session.SessionId, session.Profile.Metadata?.Revision ?? session.SessionId, 0);
 
     private static NativeOperationPolicy NativePolicy(AutomationSession session)
+        => NativePolicy(session.Profile.NativeInput);
+
+    internal static NativeOperationPolicy NativePolicy(NativeInputPolicy policy)
     {
-        var policy = session.Profile.NativeInput;
         if (!policy.Enabled)
         {
             throw new NativeOperationException(NativeFailureCode.RawInputDisabled,
@@ -292,6 +297,7 @@ public sealed partial class DesktopAutomationController
             AllowedMouseButtons = policy.AllowedMouseButtons.Select(ParseMouseButton).ToArray(),
             ConstrainTo = policy.ConstrainTo == "clientArea" ? NativeInputBounds.ClientArea : NativeInputBounds.Window,
             RequireForeground = policy.RequireForeground,
+            AllowActivate = policy.ActivateBeforeInput,
             MaximumTextLength = policy.MaximumTextLength,
             AllowSystemKeys = policy.AllowSystemKeys
         };

@@ -55,6 +55,9 @@ public sealed class ServerToolTests
             controller,
             new ControlSelector { AutomationId = "SaveButton" },
             CancellationToken.None);
+        var value = await ControlTools.GetControlValue(
+            controller, new ControlSelector { AutomationId = "CustomerNameTextBox" },
+            CancellationToken.None);
         var snapshot = await ControlTools.SnapshotApplicationSchema(
             controller,
             maxDepth: 3,
@@ -70,11 +73,13 @@ public sealed class ServerToolTests
         Assert.Equal(AutomationErrorCode.ApplicationNotAttached, state.Error?.Code);
         Assert.False(control.Succeeded);
         Assert.Equal(AutomationErrorCode.ApplicationNotAttached, control.Error?.Code);
+        Assert.False(value.Succeeded);
+        Assert.Equal(AutomationErrorCode.ApplicationNotAttached, value.Error?.Code);
         Assert.False(snapshot.Succeeded);
         Assert.Equal(AutomationErrorCode.ApplicationNotAttached, snapshot.Error?.Code);
         Assert.False(resolution.Succeeded);
         Assert.Equal(AutomationErrorCode.ApplicationNotAttached, resolution.Error?.Code);
-        Assert.Equal(4, worker.RunCount);
+        Assert.Equal(5, worker.RunCount);
     }
 
     [Fact]
@@ -160,6 +165,7 @@ public sealed class ServerToolTests
             "inspect_controls",
             "find_control",
             "get_control_properties",
+            "get_control_value",
             "invoke_control",
             "set_control_value",
             "select_control_item",
@@ -207,7 +213,9 @@ public sealed class ServerToolTests
         var tools = provider.GetServices<McpServerTool>()
             .ToDictionary(tool => tool.ProtocolTool.Name, StringComparer.Ordinal);
 
-        Assert.Equal(30, tools.Count);
+        Assert.Equal(31, tools.Count);
+        AssertSchemaProperties(tools["get_control_value"],
+            required: ["selector"], properties: ["selector"]);
         AssertSchemaProperties(
             tools["launch_application"],
             required: ["profileId"],

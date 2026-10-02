@@ -47,6 +47,8 @@ set +e
   --mutate '**/Discovery/NearbyLabelGeometry.cs' \
   --mutate '**/Discovery/ApplicationSnapshotBuilder.cs' \
   --mutate '**/FlaUi/ControlObserver.cs' \
+  --mutate '**/FlaUi/ControlValueReader.cs' \
+  --mutate '**/FlaUi/ProviderActionExecutor.cs' \
   --mutate '**/FlaUi/SafeAutomationElementReader.cs' \
   --mutate '**/FlaUi/SafeAutomationTraversal.cs' \
   --mutate '**/CapturePrivacy.cs' \

@@ -12,6 +12,8 @@ public sealed record ControlSummary(
     bool IsValueRedacted,
     IReadOnlyList<string> SupportedPatterns)
 {
+    public bool PrivacyMode { get; init; } = true;
+
     public IReadOnlyList<AutomationDiagnostic> Failures { get; init; } = [];
     public bool Partial => Failures.Count > 0;
     public bool IsPassword { get; init; }

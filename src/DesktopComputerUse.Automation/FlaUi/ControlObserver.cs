@@ -66,6 +66,7 @@ public sealed class ControlObserver
             new RectangleInfo(bounds.X, bounds.Y, bounds.Width, bounds.Height),
             value, sensitive, patterns)
         {
+            PrivacyMode = profile.PrivacyMode,
             Failures = reader.Failures.Skip(start).ToArray(),
             IsPassword = password
         };
@@ -79,11 +80,11 @@ public sealed class ControlObserver
     {
         var hasId = reader.TryRead("AutomationId", getAutomationId, out var id);
         var hasPassword = reader.TryRead("IsPassword", getPassword, out var password);
-        // A failed sensitivity check must never permit a value read.
+        // Failed sensitivity checks fail closed unless privacy is explicitly disabled.
         return (id, !hasPassword || password,
-            !hasId || !hasPassword || password ||
+            profile.PrivacyMode && (!hasId || !hasPassword || password ||
             (!string.IsNullOrWhiteSpace(id) &&
-             profile.SensitiveAutomationIds.Contains(id, StringComparer.OrdinalIgnoreCase)));
+             profile.SensitiveAutomationIds.Contains(id, StringComparer.OrdinalIgnoreCase))));
     }
 
     public ControlTreeNode Inspect(

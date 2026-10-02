@@ -87,6 +87,7 @@ public sealed class ApplicationProfileStore : IReloadableApplicationProfileStore
                 profile.Backend,
                 profile.EnableScreenshots)
             {
+                PrivacyMode = profile.PrivacyMode,
                 SourceFile = profile.Metadata?.SourceFile,
                 Revision = profile.Metadata?.Revision,
                 LoadedAtUtc = profile.Metadata?.LoadedAtUtc,

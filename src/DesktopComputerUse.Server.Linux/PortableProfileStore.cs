@@ -167,6 +167,7 @@ public sealed class PortableProfileStore
             profile.Backend,
             profile.EnableScreenshots)
         {
+            PrivacyMode = profile.PrivacyMode,
             SourceFile = path,
             Revision = Convert.ToHexString(SHA256.HashData(bytes)),
             LoadedAtUtc = loadedAt,

@@ -57,7 +57,10 @@ public sealed class ApplicationSnapshotBuilder(ControlObserver observer)
                 Partial = capture.Partial,
                 Truncated = capture.Truncated,
                 Failures = capture.Failures.ToArray()
-            });
+            })
+        {
+            PrivacyMode = profile.PrivacyMode
+        };
     }
 
     private static IReadOnlyDictionary<string, string> BuildRuntimeLookup(
@@ -107,9 +110,9 @@ public sealed class ApplicationSnapshotBuilder(ControlObserver observer)
         var reader = node.Reader;
         var element = node.Element;
         var labeledById = GetLabeledById(element, reader, runtimeLookup);
-        // Observe has already applied fail-closed password/profile redaction.
+        // Observe has already applied the retained profile's privacy policy.
         var password = summary.IsPassword;
-        var redacted = summary.IsValueRedacted || password;
+        var redacted = summary.IsValueRedacted;
         return new ControlSnapshot
         {
             CandidateId = node.CandidateId,
@@ -138,13 +141,16 @@ public sealed class ApplicationSnapshotBuilder(ControlObserver observer)
                 () => element.Properties.IsKeyboardFocusable.Value, false),
             IsPassword = password,
             IsValueRedacted = redacted,
-            Value = redacted ? null : summary.Value,
+            Value = SnapshotValue(summary),
             Bounds = summary.Bounds,
             RelativeBounds = RelativeBounds(summary.Bounds, windowBounds),
             SupportedPatterns = summary.SupportedPatterns,
             LabeledByCandidateId = labeledById
         };
     }
+
+    internal static string? SnapshotValue(ControlSummary summary)
+        => summary.IsValueRedacted ? null : summary.Value;
 
     private static IReadOnlyList<string> GetSiblingIds(
         AutomationNodeCapture<AutomationElement> node,

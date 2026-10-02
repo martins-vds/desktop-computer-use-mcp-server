@@ -6,6 +6,8 @@ public sealed record WindowCapture(
     int Width,
     int Height)
 {
+    public bool PrivacyMode { get; init; } = true;
+
     public string? Method { get; init; }
     public bool OcclusionSafe { get; init; }
     public NativeCaptureToken? Token { get; init; }

@@ -2,6 +2,7 @@ using System.Buffers.Binary;
 using System.IO.Compression;
 using DesktopComputerUse.Automation.Windows;
 using DesktopComputerUse.Contracts.Automation;
+using DesktopComputerUse.Contracts.Configuration;
 
 namespace DesktopComputerUse.Native.Tests;
 
@@ -11,6 +12,340 @@ public sealed class NativeDesktopBrokerTests
     private static readonly NativeCaptureGeneration Generation = new("session-one", "revision", 1);
     private static NativeOperationPolicy MousePolicy => new() { Enabled = true };
     private static NativeOperationPolicy KeyboardPolicy => new() { Enabled = true, AllowKeyboard = true };
+
+    [Fact]
+    public void ProfileActivationIsDefaultOffAndRequiresForegroundVerification()
+    {
+        Assert.False(new NativeInputPolicy().ActivateBeforeInput);
+        Assert.False(new NativeOperationPolicy().AllowActivate);
+        (new NativeInputPolicy { Enabled = true, ActivateBeforeInput = true }).Validate();
+        var exception = Assert.Throws<ProfileValidationException>(() =>
+            (new NativeInputPolicy { ActivateBeforeInput = true, RequireForeground = false }).Validate());
+        Assert.Contains("foreground", exception.Message);
+        Assert.Throws<ProfileValidationException>(() =>
+            (new NativeInputPolicy { ActivateBeforeInput = true, AllowKeyboard = true, RequireForeground = false }).Validate());
+    }
+
+    [Fact]
+    public void ProfileActivationOptInSurvivesJsonRoundTripWithoutEnablingKeyboard()
+    {
+        var options = new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web);
+        var policy = System.Text.Json.JsonSerializer.Deserialize<NativeInputPolicy>(
+            """{"enabled":true,"activateBeforeInput":true}""", options)!;
+        policy.Validate();
+        Assert.True(policy.ActivateBeforeInput);
+        Assert.False(policy.AllowKeyboard);
+        Assert.True(policy.RequireForeground);
+        var roundTrip = System.Text.Json.JsonSerializer.Deserialize<NativeInputPolicy>(
+            System.Text.Json.JsonSerializer.Serialize(policy, options), options)!;
+        Assert.True(roundTrip.ActivateBeforeInput);
+        Assert.False(System.Text.Json.JsonSerializer.Deserialize<NativeInputPolicy>("{}", options)!.ActivateBeforeInput);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task DefaultKeyboardPolicyNeverAttemptsActivation(bool keyPress)
+    {
+        var api = new FakeApi { Foreground = false };
+        var error = await Assert.ThrowsAsync<NativeOperationException>(() =>
+            DispatchKeyboardAsync(new(api), keyPress, KeyboardPolicy));
+        Assert.Equal(NativeFailureCode.ForegroundRequired, error.Code);
+        Assert.Equal(0, api.ActivationCalls);
+        Assert.Equal(0, api.InputCalls);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task OptInActivatesOnceBeforeKeyboardAndSkipsAlreadyForeground(bool keyPress)
+    {
+        var api = new FakeApi { Foreground = false, ActivationDelayPolls = 2 };
+        var broker = new WindowsDesktopBroker(api);
+        var policy = KeyboardPolicy with { AllowActivate = true };
+        await DispatchKeyboardAsync(broker, keyPress, policy);
+        Assert.Equal(1, api.ActivationCalls);
+        Assert.Equal(1, api.InputCalls);
+        await DispatchKeyboardAsync(broker, keyPress, policy);
+        Assert.Equal(1, api.ActivationCalls);
+        Assert.Equal(2, api.InputCalls);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task DeniedActivationIsBoundedAndNeverDispatchesOrRetriesKeyboard(bool keyPress)
+    {
+        var api = new FakeApi { Foreground = false, ActivationSucceeds = false };
+        var error = await Assert.ThrowsAsync<NativeOperationException>(() =>
+            DispatchKeyboardAsync(new(api, TimeSpan.FromMilliseconds(30)), keyPress,
+                KeyboardPolicy with { AllowActivate = true }));
+        Assert.Equal(NativeFailureCode.WindowActivationFailed, error.Code);
+        Assert.Equal(new NativeWindowTarget(999, 999), error.ForegroundTarget);
+        Assert.Null(error.DispatchedInputCount);
+        Assert.Equal(1, api.ActivationCalls);
+        Assert.Equal(0, api.InputCalls);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SuccessfulActivationDoesNotBypassForeignKeyboardFocus(bool keyPress)
+    {
+        var api = new FakeApi { Foreground = false, OwnedFocus = false };
+        var error = await Assert.ThrowsAsync<NativeOperationException>(() =>
+            DispatchKeyboardAsync(new(api), keyPress, KeyboardPolicy with { AllowActivate = true }));
+        Assert.Equal(NativeFailureCode.ForeignKeyboardFocus, error.Code);
+        Assert.Equal(1, api.ActivationCalls);
+        Assert.Equal(0, api.InputCalls);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ForegroundLostDuringFocusVerificationNeverDispatches(bool keyPress)
+    {
+        var api = new FakeApi { Foreground = false };
+        api.OnFocusVerification = () => api.Foreground = false;
+        var error = await Assert.ThrowsAsync<NativeOperationException>(() =>
+            DispatchKeyboardAsync(new(api), keyPress, KeyboardPolicy with { AllowActivate = true }));
+        Assert.Equal(NativeFailureCode.ForegroundRequired, error.Code);
+        Assert.Equal("keyboard", error.Operation);
+        Assert.Equal("verifyForeground", error.Phase);
+        Assert.Contains("lost foreground", error.Message);
+        Assert.Equal(1, api.ActivationCalls);
+        Assert.Equal(0, api.InputCalls);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CancellationAfterPreparationStopsBeforeFurtherKeyboardNativeReads(bool keyPress)
+    {
+        using var cancellation = new CancellationTokenSource();
+        var api = new FakeApi { OnGeometryRead = _ => cancellation.Cancel() };
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            DispatchKeyboardAsync(new(api), keyPress, KeyboardPolicy with { AllowActivate = true }, cancellation.Token));
+        Assert.Equal(1, api.GeometryReads);
+        Assert.Equal(0, api.ActivationCalls);
+        Assert.Equal(0, api.InputCalls);
+    }
+
+    [Fact]
+    public async Task CancellationDuringGrantedActivationStopsBeforePollingPostcondition()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var api = new FakeApi { Foreground = false, OnActivationRequest = cancellation.Cancel };
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            new WindowsDesktopBroker(api).ActivateWindowAsync(Target, cancellationToken: cancellation.Token));
+        Assert.Equal(1, api.ActivationCalls);
+        Assert.Equal(1, api.ForegroundChecks);
+        Assert.Equal(2, api.GeometryReads);
+        Assert.Equal(0, api.InputCalls);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ChangedOwnershipDuringPreparationPreventsRestoreActivationAndInput(bool minimized)
+    {
+        var api = new FakeApi { Foreground = false, Minimized = minimized };
+        api.OnGeometryRead = read =>
+        {
+            if (read == 2)
+                throw new NativeOperationException(NativeFailureCode.InvalidWindow, "validateWindow", "ownership",
+                    "HWND no longer belongs to the attached process.", Target);
+        };
+        var error = await Assert.ThrowsAsync<NativeOperationException>(() =>
+            new WindowsDesktopBroker(api).TypeTextAsync(Target, "x",
+                KeyboardPolicy with { AllowRestore = true, AllowActivate = true }));
+        Assert.Equal(NativeFailureCode.InvalidWindow, error.Code);
+        Assert.Equal("ownership", error.Phase);
+        Assert.Equal(Target, error.Target);
+        Assert.Null(error.DispatchedInputCount);
+        Assert.Equal(0, api.RestoreCalls);
+        Assert.Equal(0, api.ActivationCalls);
+        Assert.Equal(0, api.InputCalls);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ActivationPollingYieldsWhileAwaitingExternalForegroundGrant(bool keyPress)
+    {
+        var api = new FakeApi { Foreground = false, ActivationSucceeds = false };
+        var pending = DispatchKeyboardAsync(new(api), keyPress, KeyboardPolicy with { AllowActivate = true });
+        api.Foreground = true;
+        var result = await pending;
+        Assert.True(result.IsForeground);
+        Assert.Equal(1, api.ActivationCalls);
+        Assert.Equal(1, api.InputCalls);
+    }
+
+    [Theory]
+    [InlineData(false, false, "minimized")]
+    [InlineData(false, false, "cloaked")]
+    [InlineData(false, false, "hidden")]
+    [InlineData(true, false, "minimized")]
+    [InlineData(true, false, "cloaked")]
+    [InlineData(true, false, "hidden")]
+    [InlineData(false, true, "minimized")]
+    [InlineData(false, true, "cloaked")]
+    [InlineData(false, true, "hidden")]
+    [InlineData(true, true, "minimized")]
+    [InlineData(true, true, "cloaked")]
+    [InlineData(true, true, "hidden")]
+    public async Task ActivationDoesNotBypassKeyboardUsabilityRevalidation(
+        bool keyPress, bool afterDispatch, string state)
+    {
+        var api = new FakeApi { Foreground = false };
+        api.OnGeometryRead = read =>
+        {
+            if (read != (afterDispatch ? 4 : 3)) return;
+            api.Minimized = state == "minimized";
+            api.Cloaked = state == "cloaked";
+            api.Visible = state != "hidden";
+        };
+        var error = await Assert.ThrowsAsync<NativeOperationException>(() =>
+            DispatchKeyboardAsync(new(api), keyPress, KeyboardPolicy with { AllowActivate = true }));
+        Assert.Equal(NativeFailureCode.ForegroundRequired, error.Code);
+        Assert.Equal("keyboard", error.Operation);
+        Assert.Equal(afterDispatch ? "afterDispatch" : "verifyForeground", error.Phase);
+        Assert.Equal(1, api.ActivationCalls);
+        Assert.Equal(afterDispatch ? 1 : 0, api.InputCalls);
+        if (afterDispatch)
+        {
+            Assert.Equal(keyPress ? 4U : 2U, error.DispatchedInputCount);
+            Assert.Contains("may already have occurred", error.Message);
+            Assert.False(DesktopComputerUse.Automation.AutomationExceptionResultMapper.CreateDiagnostic(error).Retryable);
+        }
+        else
+        {
+            Assert.Null(error.DispatchedInputCount);
+            Assert.Contains("not usable", error.Message);
+        }
+    }
+
+    [Theory]
+    [InlineData("click")]
+    [InlineData("text")]
+    [InlineData("keys")]
+    public async Task MissingNativeAuthorizationPolicyIsRejectedBeforeAnyNativeRead(string operation)
+    {
+        var api = new FakeApi { Foreground = false };
+        var broker = new WindowsDesktopBroker(api);
+        var error = await Assert.ThrowsAsync<ArgumentNullException>(async () =>
+        {
+            if (operation == "click")
+                await broker.ClickScreenPointAsync(Target, new(-900, 150), null!);
+            else if (operation == "text")
+                await broker.TypeTextAsync(Target, "x", null!);
+            else
+                await broker.KeyPressAsync(Target, "Ctrl+A", null!);
+        });
+        Assert.Equal("policy", error.ParamName);
+        Assert.Equal(0, api.GeometryReads);
+        Assert.Equal(0, api.ActivationCalls);
+        Assert.Equal(0, api.InputCalls);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CancellationDuringFocusVerificationPreventsKeyboardDispatch(bool keyPress)
+    {
+        using var cancellation = new CancellationTokenSource();
+        var api = new FakeApi { Foreground = false, OnFocusVerification = cancellation.Cancel };
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            DispatchKeyboardAsync(new(api), keyPress, KeyboardPolicy with { AllowActivate = true }, cancellation.Token));
+        Assert.Equal(1, api.ActivationCalls);
+        Assert.Equal(0, api.InputCalls);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task OptInNeverReactivatesOrRetriesAfterKeyboardDispatch(bool loseFocus)
+    {
+        var api = new FakeApi
+        {
+            Foreground = false, LoseForegroundOnInput = !loseFocus, LoseFocusOnInput = loseFocus
+        };
+        var error = await Assert.ThrowsAsync<NativeOperationException>(() =>
+            new WindowsDesktopBroker(api).TypeTextAsync(Target, "x", KeyboardPolicy with { AllowActivate = true }));
+        Assert.Equal("afterDispatch", error.Phase);
+        Assert.Equal(2U, error.DispatchedInputCount);
+        Assert.Equal(loseFocus ? NativeFailureCode.ForeignKeyboardFocus : NativeFailureCode.ForegroundRequired, error.Code);
+        Assert.Equal(1, api.ActivationCalls);
+        Assert.Equal(1, api.InputCalls);
+    }
+
+    [Fact]
+    public async Task ActivationDoesNotRestoreMinimizedTargetsOrDispatchPartialInputTwice()
+    {
+        var api = new FakeApi { Foreground = false, Minimized = true, KeyboardDispatchCount = 1 };
+        var broker = new WindowsDesktopBroker(api);
+        var policy = KeyboardPolicy with { AllowActivate = true };
+        var minimized = await Assert.ThrowsAsync<NativeOperationException>(() => broker.TypeTextAsync(Target, "x", policy));
+        Assert.Equal(NativeFailureCode.WindowActivationFailed, minimized.Code);
+        Assert.Equal(0, api.RestoreCalls);
+        Assert.Equal(0, api.ActivationCalls);
+        Assert.Equal(0, api.InputCalls);
+        api.Minimized = false;
+        var partial = await Assert.ThrowsAsync<NativeOperationException>(() => broker.TypeTextAsync(Target, "x", policy));
+        Assert.Equal(NativeFailureCode.InputDispatchFailed, partial.Code);
+        Assert.Equal(1U, partial.DispatchedInputCount);
+        Assert.Equal(1, api.ActivationCalls);
+        Assert.Equal(1, api.InputCalls);
+    }
+
+    [Fact]
+    public async Task ActivationOptInPreservesMouseHitAndPolicyChecks()
+    {
+        var api = new FakeApi { Foreground = false, HitBelongsToTarget = false };
+        var broker = new WindowsDesktopBroker(api);
+        var invalid = await Assert.ThrowsAsync<NativeOperationException>(() =>
+            broker.ClickScreenPointAsync(Target, new(-900, 150),
+                MousePolicy with { AllowActivate = true, RequireForeground = false }));
+        Assert.Equal(NativeFailureCode.InvalidArgument, invalid.Code);
+        Assert.Equal(0, api.ActivationCalls);
+        Assert.Equal(0, api.GeometryReads);
+        var occluded = await Assert.ThrowsAsync<NativeOperationException>(() =>
+            broker.ClickScreenPointAsync(Target, new(-900, 150), MousePolicy with { AllowActivate = true }));
+        Assert.Equal(NativeFailureCode.ForeignWindowAtPoint, occluded.Code);
+        Assert.Equal(1, api.ActivationCalls);
+        Assert.Equal(0, api.InputCalls);
+    }
+
+    [Fact]
+    public async Task DisabledInputNeverAttemptsOptInActivation()
+    {
+        var api = new FakeApi { Foreground = false };
+        var error = await Assert.ThrowsAsync<NativeOperationException>(() =>
+            new WindowsDesktopBroker(api).TypeTextAsync(Target, "x",
+                KeyboardPolicy with { Enabled = false, AllowActivate = true }));
+        Assert.Equal(NativeFailureCode.RawInputDisabled, error.Code);
+        Assert.Equal(0, api.GeometryReads);
+        Assert.Equal(0, api.ActivationCalls);
+        Assert.Equal(0, api.InputCalls);
+    }
+
+    [Fact]
+    public async Task CancellationDuringActivationPreparationPreventsActivationRequest()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var api = new FakeApi { Foreground = false };
+        api.OnGeometryRead = read => { if (read == 2) cancellation.Cancel(); };
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            new WindowsDesktopBroker(api).TypeTextAsync(Target, "x", KeyboardPolicy with { AllowActivate = true }, cancellation.Token));
+        Assert.Equal(0, api.ActivationCalls);
+        Assert.Equal(0, api.InputCalls);
+    }
+
+    private static Task<NativeKeyboardResult> DispatchKeyboardAsync(WindowsDesktopBroker broker, bool keyPress,
+        NativeOperationPolicy policy, CancellationToken cancellationToken = default) =>
+        keyPress ? broker.KeyPressAsync(Target, "Ctrl+A", policy, cancellationToken)
+            : broker.TypeTextAsync(Target, "x", policy, cancellationToken);
 
     [Theory]
     [InlineData("a\nb")]
@@ -613,6 +948,138 @@ public sealed class NativeDesktopBrokerTests
     }
 
     [Fact]
+    public void NativeCapturePrivacyDefaultsToEnabled()
+    {
+        Assert.True(new NativeCaptureOptions().PrivacyMode);
+        var geometry = new FakeApi().GetGeometry(Target);
+        var token = new NativeCaptureToken("id", DateTimeOffset.UtcNow, Target, Generation, geometry,
+            new(geometry.WindowBounds, geometry.WindowBounds.Width, geometry.WindowBounds.Height));
+        Assert.True(new NativeWindowCapture([], "image/png", "PrintWindow", true, token, 0).PrivacyMode);
+    }
+
+    [Theory]
+    [InlineData("incomplete")]
+    [InlineData("unknown")]
+    [InlineData("unmapped")]
+    [InlineData("nullRegion")]
+    public async Task PrivacyOptOutCapturesUnchangedPixelsWhenSensitiveGeometryCannotBeEstablished(string failure)
+    {
+        var api = new FakeApi { Window = new(-1000, 100, 2, 2), Client = new(-1000, 100, 2, 2) };
+        var pixels = new FakePixels();
+        var provider = new WindowsWindowCaptureProvider(new(api), pixels);
+        var options = Options() with
+        {
+            SensitiveGeometryComplete = failure != "incomplete",
+            SensitiveRegions = failure switch
+            {
+                "incomplete" => [new(null), new(new(-1000, 100, 1, 1))],
+                "unknown" => [new(null)],
+                "unmapped" => [new(new(0, 0, 1, 1))],
+                _ => [null!]
+            }
+        };
+        var rejected = await Assert.ThrowsAsync<NativeOperationException>(() => provider.CaptureAsync(Target, options));
+        Assert.Equal(NativeFailureCode.SensitiveGeometryUnavailable, rejected.Code);
+        Assert.Equal(0, pixels.Calls);
+
+        var capture = await provider.CaptureAsync(Target, options with { PrivacyMode = false });
+        Assert.False(capture.PrivacyMode);
+        Assert.Equal(0, capture.RedactedControlCount);
+        Assert.True(capture.OcclusionSafe);
+        Assert.Equal(new byte[]
+        {
+            0, 3, 2, 1, 255, 3, 2, 1, 255,
+            0, 3, 2, 1, 255, 3, 2, 1, 255
+        }, DecodePng(capture.ImageBytes));
+        Assert.Equal(new byte[] { 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3, 0 },
+            pixels.LastBuffer!.BgraPixels);
+        Assert.Equal(1, pixels.Calls);
+        Assert.Equal(capture.Token, provider.GetCaptureToken(capture.Token.CaptureId, Target, Generation));
+    }
+
+    [Fact]
+    public async Task PrivacyOptOutSkipsEvenValidSuppliedRedactions()
+    {
+        var api = new FakeApi { Window = new(-1000, 100, 2, 2), Client = new(-1000, 100, 2, 2) };
+        var pixels = new FakePixels();
+        var provider = new WindowsWindowCaptureProvider(new(api), pixels);
+        var options = Options() with { SensitiveRegions = [new(new(-1000, 100, 1, 1))] };
+        var privateCapture = await provider.CaptureAsync(Target, options);
+        Assert.True(privateCapture.PrivacyMode);
+        Assert.Equal(1, privateCapture.RedactedControlCount);
+        Assert.Equal(new byte[] { 0, 0, 0, 0, 255 }, DecodePng(privateCapture.ImageBytes)[..5]);
+
+        var unredacted = await provider.CaptureAsync(Target, options with
+        {
+            PrivacyMode = false, SensitiveGeometryComplete = false
+        });
+        Assert.False(unredacted.PrivacyMode);
+        Assert.Equal(0, unredacted.RedactedControlCount);
+        Assert.Equal(new byte[] { 0, 3, 2, 1, 255 }, DecodePng(unredacted.ImageBytes)[..5]);
+        Assert.Equal(new byte[] { 1, 2, 3, 0 }, pixels.LastBuffer!.BgraPixels[..4]);
+    }
+
+    [Fact]
+    public async Task PrivacyOptOutCannotEnableDisabledScreenshots()
+    {
+        var api = new FakeApi();
+        var pixels = new FakePixels();
+        var error = await Assert.ThrowsAsync<NativeOperationException>(() =>
+            new WindowsWindowCaptureProvider(new(api), pixels).CaptureAsync(Target, Options() with
+            {
+                PrivacyMode = false, EnableScreenshots = false,
+                SensitiveGeometryComplete = false, SensitiveRegions = [new(null)]
+            }));
+        Assert.Equal(NativeFailureCode.CaptureDisabled, error.Code);
+        Assert.Equal(0, api.GeometryReads);
+        Assert.Equal(0, pixels.Calls);
+    }
+
+    [Theory]
+    [InlineData(false, NativeFailureCode.CaptureFailed)]
+    [InlineData(true, NativeFailureCode.UnsafeScreenCapture)]
+    public async Task PrivacyOptOutNeverPermitsScreenFallback(bool allowFallback, NativeFailureCode expected)
+    {
+        var pixels = new FakePixels { Fail = true };
+        var error = await Assert.ThrowsAsync<NativeOperationException>(() =>
+            new WindowsWindowCaptureProvider(new(new FakeApi()), pixels).CaptureAsync(Target, Options() with
+            {
+                PrivacyMode = false, SensitiveGeometryComplete = false, SensitiveRegions = [new(null)],
+                AllowScreenFallback = allowFallback
+            }));
+        Assert.Equal(expected, error.Code);
+        Assert.Equal("printWindow", error.Phase);
+        Assert.Contains("refused", error.Message);
+        Assert.Equal(1, pixels.Calls);
+    }
+
+    [Theory]
+    [InlineData("session", NativeFailureCode.InvalidArgument, 0)]
+    [InlineData("minimized", NativeFailureCode.CaptureFailed, 0)]
+    [InlineData("movement", NativeFailureCode.StaleCapture, 1)]
+    [InlineData("ownership", NativeFailureCode.InvalidWindow, 0)]
+    public async Task PrivacyOptOutPreservesSessionWindowAndGeometryRestrictions(
+        string failure, NativeFailureCode expected, int expectedPixelCalls)
+    {
+        var api = new FakeApi { Minimized = failure == "minimized" };
+        if (failure == "ownership")
+            api.OnGeometryRead = _ => throw new NativeOperationException(
+                NativeFailureCode.InvalidWindow, "validateWindow", "ownership", "Window is no longer owned.", Target);
+        var pixels = new FakePixels
+        {
+            AfterCapture = failure == "movement" ? () => api.Window = api.Window with { Width = 501 } : null
+        };
+        var error = await Assert.ThrowsAsync<NativeOperationException>(() =>
+            new WindowsWindowCaptureProvider(new(api), pixels).CaptureAsync(Target, Options() with
+            {
+                PrivacyMode = false, SensitiveGeometryComplete = false, SensitiveRegions = [new(null)],
+                Generation = failure == "session" ? new("", "revision", 1) : Generation
+            }));
+        Assert.Equal(expected, error.Code);
+        Assert.Equal(expectedPixelCalls, pixels.Calls);
+    }
+
+    [Fact]
     public async Task UnknownSensitiveBoundsAndUnmappedBoundsFailBeforeCapture()
     {
         var api = new FakeApi();
@@ -640,6 +1107,7 @@ public sealed class NativeDesktopBrokerTests
         var provider = new WindowsWindowCaptureProvider(new(api), pixels);
         var capture = await provider.CaptureAsync(Target, Options() with { SensitiveRegions = [new(new(-1000, 100, 1, 1))] });
         Assert.Equal("image/png", capture.MimeType);
+        Assert.True(capture.PrivacyMode);
         Assert.True(capture.OcclusionSafe);
         Assert.Equal(1, capture.RedactedControlCount);
         var decompressed = DecodePng(capture.ImageBytes);
@@ -770,6 +1238,7 @@ public sealed class NativeDesktopBrokerTests
     private sealed class FakePixels : INativeWindowPixelSource
     {
         public int Calls { get; private set; }
+        public NativePixelBuffer? LastBuffer { get; private set; }
         public bool Fail { get; init; }
         public ManualResetEventSlim? BlockUntil { get; init; }
         public Action? AfterCapture { get; init; }
@@ -786,7 +1255,8 @@ public sealed class NativeDesktopBrokerTests
                 buffer[i] = 1; buffer[i + 1] = 2; buffer[i + 2] = 3;
             }
             AfterCapture?.Invoke();
-            return new(WrongDimensions ? source.Width - 1 : source.Width, source.Height, InvalidBuffer ? [] : buffer);
+            LastBuffer = new(WrongDimensions ? source.Width - 1 : source.Width, source.Height, InvalidBuffer ? [] : buffer);
+            return LastBuffer;
         }
     }
 
@@ -802,6 +1272,8 @@ public sealed class NativeDesktopBrokerTests
         public PhysicalScreenRect Client { get; set; } = new(-990, 130, 480, 360);
         public bool Foreground { get; set; } = true;
         public bool Minimized { get; set; }
+        public bool Visible { get; set; } = true;
+        public bool Cloaked { get; set; }
         public bool OwnedFocus { get; set; } = true;
         public bool HitBelongsToTarget { get; init; } = true;
         public bool RestoreSucceeds { get; init; } = true;
@@ -815,10 +1287,13 @@ public sealed class NativeDesktopBrokerTests
         public int ActivationDelayPolls { get; init; }
         public Action<int>? OnGeometryRead { get; set; }
         public Action? OnHitOwnership { get; set; }
+        public Action? OnFocusVerification { get; set; }
+        public Action? OnActivationRequest { get; set; }
         public int MovementRead { get; set; }
         public int GeometryReads { get; private set; }
         public int RestoreCalls { get; private set; }
         public int ActivationCalls { get; private set; }
+        public int ForegroundChecks { get; private set; }
         public int InputCalls { get; private set; }
         private PhysicalScreenPoint cursor;
         private bool restorePending, activationPending;
@@ -828,7 +1303,7 @@ public sealed class NativeDesktopBrokerTests
         {
             GeometryReads++;
             OnGeometryRead?.Invoke(GeometryReads);
-            return new(target, Window, Window, Client, 144, true, Minimized, false, Foreground);
+            return new(target, Window, Window, Client, 144, Visible, Minimized, Cloaked, Foreground);
         }
         public bool QueueRestore(NativeWindowTarget target)
         {
@@ -854,6 +1329,7 @@ public sealed class NativeDesktopBrokerTests
             ActivationCalls++;
             if (ActivationSucceeds && ActivationDelayPolls > 0) { activationPending = true; activationPolls = ActivationDelayPolls; }
             else Foreground = ActivationSucceeds;
+            OnActivationRequest?.Invoke();
             return Foreground;
         }
         public bool IsRestored(NativeWindowTarget target)
@@ -863,11 +1339,16 @@ public sealed class NativeDesktopBrokerTests
         }
         public bool IsForeground(NativeWindowTarget target)
         {
+            ForegroundChecks++;
             if (activationPending && --activationPolls <= 0) { Foreground = true; activationPending = false; }
             return Foreground;
         }
         public NativeWindowTarget? GetForegroundTarget() => Foreground ? Target : new(999, 999);
-        public bool HasOwnedKeyboardFocus(NativeWindowTarget target) => OwnedFocus;
+        public bool HasOwnedKeyboardFocus(NativeWindowTarget target)
+        {
+            OnFocusVerification?.Invoke();
+            return OwnedFocus;
+        }
         public long WindowAtPoint(PhysicalScreenPoint point) => HitBelongsToTarget ? targetHandle : 999;
         private const long targetHandle = 456;
         public bool IsTargetOrChild(NativeWindowTarget target, long windowHandle)

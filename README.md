@@ -153,6 +153,7 @@ An example profile is available at [`profiles/example.application.json`](profile
   "maxTreeDepth": 6,
   "maxResults": 300,
   "enableScreenshots": false,
+  "privacyMode": true,
   "semanticTargets": {
     "save-record": {
       "intent": "Save the current record",
@@ -187,6 +188,30 @@ An example profile is available at [`profiles/example.application.json`](profile
 Relative executable and working-directory paths are resolved from the profile file's directory. The executable is allowed to be absent when profiles are loaded so profiles can be deployed before applications, but launch fails explicitly until the file exists.
 
 Native input and multiple-instance launches are disabled by default. The example profile makes those defaults explicit; see [native desktop fallback](docs/native-desktop.md) before enabling mouse or keyboard input. Profile edits take effect through `reload_application_profiles`; active sessions retain their original revision until detach/reattach.
+
+### Privacy mode
+
+`privacyMode` defaults to **`true`**, preserving current behavior: password,
+profile-sensitive, and unverifiable values are redacted; screenshots require
+complete sensitivity discovery and safe redaction. Set **`"privacyMode": false`**
+in a trusted application profile to allow unredacted reads and writes through
+supported UIA patterns and unredacted HWND screenshots without UIA privacy
+traversal. Passwords and business data may then be returned to the MCP client.
+
+This is a privacy opt-out, **not** a desktop-safety opt-out. Screenshot permission,
+executable allowlisting, attached-window confinement, read-only controls,
+native-input authorization, and keyboard foreground/focus checks still apply.
+Writes remain supported in either mode; privacy mode controls observation and
+redaction, not the application's own ability to accept a write.
+Reload the profile, then detach/reattach to adopt the change. Listings and
+application state expose the active privacy setting.
+
+Use `get_control_value` to read the current Value-pattern value explicitly,
+including an empty string. Its `isValueRedacted` flag distinguishes a protected
+value from a readable one; failed or unsupported reads return errors rather than
+success-shaped null values. `get_control_properties` also includes readable values.
+Neither mode writes field values to audit logs. See
+[legacy provider troubleshooting](docs/resilient-uia.md#legacy-ie-mshtml-providers).
 
 Version 1 profiles using `semanticSelectors` remain supported. At runtime they are adapted to one exact version 2 strategy.
 
@@ -371,14 +396,15 @@ Do not redirect server logs to stdout. MCP protocol messages use stdout; the ser
 | `attach_application` | Verify and attach to an existing process |
 | `detach_application` | Release the active automation session |
 | `get_application_state` | Return process, profile, window, and backend state |
-| `inspect_controls` | Return a bounded, redacted control subtree |
+| `inspect_controls` | Return a bounded control subtree under the active privacy policy |
 | `snapshot_application_schema` | Return a rich, bounded UIA snapshot with snapshot-local candidate IDs and a view signature |
 | `resolve_control_intent` | Run exact and deterministic fuzzy ranking without performing an action |
 | `get_profile_update_proposals` | List shadow-mode selector-healing proposals |
 | `export_profile_update_patch` | Export a reviewed semantic-target patch without writing files |
-| `capture_control_image` | Return a selected control as an MCP image block after redacting sensitive descendants |
+| `capture_control_image` | Return a selected control as an MCP image under the active privacy policy |
 | `find_control` | Resolve exactly one control |
-| `get_control_properties` | Return control properties and supported patterns |
+| `get_control_properties` | Return control properties, readable values, and supported patterns |
+| `get_control_value` | Read a Value-pattern value explicitly, preserving privacy redaction |
 | `invoke_control` | Use the UI Automation Invoke pattern |
 | `set_control_value` | Set a writable UI Automation Value pattern |
 | `select_control_item` | Use the SelectionItem pattern |
@@ -424,8 +450,9 @@ Before using a real application:
 - Do not automate UAC secure-desktop prompts.
 - Mark password and sensitive fields with `sensitiveAutomationIds`.
 - Enable screenshots only for profiles that require them.
-- Control and window captures black out password controls and automation IDs listed in `sensitiveAutomationIds`; direct capture of a sensitive control is rejected.
-- Capture fails closed if sensitive-control discovery or geometry cannot be trusted; it never silently falls back to pixels from another process.
+- With privacy mode enabled (default), captures black out password and configured sensitive controls; direct sensitive-control capture is rejected and unverifiable redaction fails closed.
+- Disabling privacy mode explicitly permits unredacted values and images, including passwords; it does not enable screenshots or native input by itself.
+- Capture never silently falls back to pixels from another process, regardless of privacy mode.
 - Native input must be explicitly enabled by the attached profile; mouse input is client-area constrained by default.
 - Keyboard fallback requires verified foreground and process-owned focus. `SendInput` is global and cannot eliminate races during dispatch; avoid concurrent desktop interaction.
 - Profile reload does not silently update an active session's permissions. Detach/reattach after reviewing the new revision.

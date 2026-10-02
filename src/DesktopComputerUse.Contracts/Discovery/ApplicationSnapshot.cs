@@ -10,6 +10,8 @@ public sealed record ApplicationSnapshot(
     DateTimeOffset CapturedAt,
     WindowSnapshot Window)
 {
+    public bool PrivacyMode { get; init; } = true;
+
     public bool Partial => Window.Partial;
     public bool Truncated => Window.Truncated;
     public IReadOnlyList<AutomationDiagnostic> Failures => Window.Failures;

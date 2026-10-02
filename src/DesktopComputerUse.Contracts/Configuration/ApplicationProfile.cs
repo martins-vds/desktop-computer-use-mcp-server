@@ -32,6 +32,8 @@ public sealed record ApplicationProfile
 
     public bool EnableScreenshots { get; init; }
 
+    public bool PrivacyMode { get; init; } = true;
+
     public bool AllowMultipleInstances { get; init; }
 
     public void ValidateWindowAndBackend()

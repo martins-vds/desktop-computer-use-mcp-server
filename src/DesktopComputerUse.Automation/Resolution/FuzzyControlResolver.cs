@@ -1,3 +1,4 @@
+using DesktopComputerUse.Automation.Selectors;
 using DesktopComputerUse.Contracts.Automation;
 using DesktopComputerUse.Contracts.Discovery;
 using DesktopComputerUse.Contracts.Profiles;
@@ -57,51 +58,27 @@ public sealed class FuzzyControlResolver
         var controlLookup = snapshot.Window.Controls.ToDictionary(
             control => control.CandidateId,
             StringComparer.Ordinal);
-
+        var children = snapshot.Window.Controls
+            .Where(control => control.ParentCandidateId is not null &&
+                controlLookup.ContainsKey(control.ParentCandidateId))
+            .GroupBy(control => control.ParentCandidateId!)
+            .ToDictionary(group => group.Key, group => group.ToArray(), StringComparer.Ordinal);
+        var roots = snapshot.Window.Controls.Where(control => control.ParentCandidateId is null ||
+            !controlLookup.ContainsKey(control.ParentCandidateId)).ToArray();
         foreach (var strategy in target.Strategies.OrderByDescending(strategy => strategy.Weight))
         {
-            var exactMatches = snapshot.Window.Controls
-                .Where(control => PassesHardGates(control, target))
-                .Where(control => IsExactMatch(control, strategy, controlLookup))
-                .ToArray();
-            if (strategy.Index is int index)
-            {
-                exactMatches = index < exactMatches.Length
-                    ? [exactMatches[index]]
-                    : [];
-            }
-
+            var exactMatches = FindExactStrategyMatches(
+                snapshot, target, strategy, roots, children, controlLookup.Count);
             if (exactMatches.Length == 1)
-            {
-                var candidate = exactMatches[0];
-                return new ControlResolutionResult(
-                    ResolutionStatus.Resolved,
-                    semanticKey,
-                    target.Intent,
-                    snapshot.Window.View.Key,
-                    candidate.CandidateId,
-                    1,
-                    1,
-                    "A configured selector strategy matched exactly and uniquely.",
-                    [
-                        new ControlCandidateScore(
-                            candidate.CandidateId,
-                            1,
-                            candidate,
-                            [
-                                new ResolutionFeatureScore(
-                                    "exact-strategy",
-                                    1,
-                                    strategy.Weight,
-                                    "Configured selector fields matched exactly.")
-                            ])
-                    ]);
-            }
+                return CreateExactResolution(
+                    semanticKey, target, snapshot.Window.View.Key, exactMatches[0], strategy);
         }
 
+        var ancestorScopes = target.Strategies.Distinct().ToDictionary(strategy => strategy,
+            strategy => ResolveAncestorScope(strategy.Ancestor, roots, children, controlLookup));
         var scoredCandidates = snapshot.Window.Controls
-            .Where(control => PassesHardGates(control, target))
-            .Select(control => Score(control, target, controlLookup))
+            .Where(control => PassesHardGates(control, target, snapshot.PrivacyMode))
+            .Select(control => Score(control, target, controlLookup, ancestorScopes))
             .OrderByDescending(candidate => candidate.Score)
             .ThenBy(candidate => candidate.CandidateId, StringComparer.Ordinal)
             .ToArray();
@@ -137,55 +114,69 @@ public sealed class FuzzyControlResolver
             scoredCandidates.Take(maximumCandidates).ToArray());
     }
 
-    private static bool IsExactMatch(
-        ControlSnapshot control,
+    private static ControlSnapshot[] FindExactStrategyMatches(
+        ApplicationSnapshot snapshot,
+        SemanticTargetDefinition target,
         SelectorStrategy strategy,
-        IReadOnlyDictionary<string, ControlSnapshot> controls)
+        ControlSnapshot[] roots,
+        IReadOnlyDictionary<string, ControlSnapshot[]> children,
+        int controlCount)
     {
-        if (!string.IsNullOrWhiteSpace(strategy.AutomationId) &&
-            !string.Equals(
-                control.AutomationId,
-                strategy.AutomationId,
-                StringComparison.Ordinal))
-        {
-            return false;
-        }
+        if (strategy.IsEmpty)
+            return [];
+        if (strategy.Ancestor is not null)
+            return ControlSelectorResolver.FindSelectorCandidates(roots, strategy,
+                control => children.GetValueOrDefault(control.CandidateId) ?? [],
+                (control, stage, _) => (!ReferenceEquals(stage, strategy) ||
+                    PassesHardGates(control, target, snapshot.PrivacyMode)) &&
+                    MatchesSnapshotSelector(control, stage),
+                int.MaxValue, 20, Math.Max(1, controlCount)).Matches;
 
-        if (!string.IsNullOrWhiteSpace(strategy.Name) &&
-            !string.Equals(control.Name, strategy.Name, StringComparison.Ordinal))
-        {
-            return false;
-        }
-
-        if (!string.IsNullOrWhiteSpace(strategy.ControlType) &&
-            !string.Equals(
-                control.ControlType,
-                strategy.ControlType,
-                StringComparison.OrdinalIgnoreCase))
-        {
-            return false;
-        }
-
-        if (!string.IsNullOrWhiteSpace(strategy.ClassName) &&
-            !string.Equals(
-                control.ClassName,
-                strategy.ClassName,
-                StringComparison.Ordinal))
-        {
-            return false;
-        }
-
-        return !strategy.IsEmpty &&
-            MatchesAncestor(control, strategy.Ancestor, controls);
+        var matches = snapshot.Window.Controls
+            .Where(control => PassesHardGates(control, target, snapshot.PrivacyMode))
+            .Where(control => MatchesSnapshotSelector(control, strategy))
+            .ToArray();
+        return ControlSelectorResolver.ApplyIndex(matches, strategy.Index).ToArray();
     }
+
+    private static ControlResolutionResult CreateExactResolution(
+        string semanticKey,
+        SemanticTargetDefinition target,
+        string viewKey,
+        ControlSnapshot candidate,
+        SelectorStrategy strategy)
+        => new(
+            ResolutionStatus.Resolved,
+            semanticKey,
+            target.Intent,
+            viewKey,
+            candidate.CandidateId,
+            1,
+            1,
+            "A configured selector strategy matched exactly and uniquely.",
+            [
+                new ControlCandidateScore(
+                    candidate.CandidateId,
+                    1,
+                    candidate,
+                    [
+                        new ResolutionFeatureScore(
+                            "exact-strategy",
+                            1,
+                            strategy.Weight,
+                            "Configured selector fields matched exactly.")
+                    ])
+            ]);
 
     private static bool PassesHardGates(
         ControlSnapshot control,
-        SemanticTargetDefinition target)
+        SemanticTargetDefinition target,
+        bool privacyMode)
     {
         if (control.Failures.Any(failure =>
                 failure.Property is "AutomationId" or "Name" or "ClassName" or "ControlType" or
-                    "IsEnabled" or "IsOffscreen" or "IsPassword" ||
+                    "IsEnabled" or "IsOffscreen" ||
+                (privacyMode && failure.Property == "IsPassword") ||
                 target.RequiredPatterns.Any(pattern => failure.Property == $"Patterns.{pattern}")))
         {
             return false;
@@ -221,7 +212,8 @@ public sealed class FuzzyControlResolver
     private static ControlCandidateScore Score(
         ControlSnapshot control,
         SemanticTargetDefinition target,
-        IReadOnlyDictionary<string, ControlSnapshot> controls)
+        IReadOnlyDictionary<string, ControlSnapshot> controls,
+        IReadOnlyDictionary<SelectorStrategy, HashSet<string>> ancestorScopes)
     {
         var features = new List<ResolutionFeatureScore>();
 
@@ -245,7 +237,7 @@ public sealed class FuzzyControlResolver
             $"Best nearby label evidence from {control.NearbyLabels.Count} labels.");
 
         var strategyScore = target.Strategies
-            .Select(strategy => ScoreStrategy(control, strategy, controls))
+            .Select(strategy => ScoreStrategy(control, strategy, controls, ancestorScopes[strategy]))
             .DefaultIfEmpty(0)
             .Max();
         Add(features, "selector-strategy", strategyScore, 1,
@@ -272,9 +264,10 @@ public sealed class FuzzyControlResolver
     private static double ScoreStrategy(
         ControlSnapshot control,
         SelectorStrategy strategy,
-        IReadOnlyDictionary<string, ControlSnapshot> controls)
+        IReadOnlyDictionary<string, ControlSnapshot> controls,
+        HashSet<string> ancestorScope)
     {
-        if (!MatchesAncestor(control, strategy.Ancestor, controls))
+        if (!InAncestorScope(control, strategy.Ancestor, ancestorScope, controls))
         {
             return 0;
         }
@@ -320,9 +313,25 @@ public sealed class FuzzyControlResolver
         return scores.Count == 0 ? 0 : scores.Average() * strategy.Weight;
     }
 
-    private static bool MatchesAncestor(
+    private static HashSet<string> ResolveAncestorScope(
+        ControlSelector? selector,
+        ControlSnapshot[] roots,
+        IReadOnlyDictionary<string, ControlSnapshot[]> children,
+        IReadOnlyDictionary<string, ControlSnapshot> controls)
+    {
+        if (selector is null)
+            return [];
+        var result = ControlSelectorResolver.FindSelectorCandidates(roots, selector,
+            control => children.GetValueOrDefault(control.CandidateId) ?? [],
+            (control, stage, _) => MatchesSnapshotSelector(control, stage),
+            int.MaxValue, 20, Math.Max(1, controls.Count));
+        return result.Matches.Select(control => control.CandidateId).ToHashSet(StringComparer.Ordinal);
+    }
+
+    private static bool InAncestorScope(
         ControlSnapshot control,
         ControlSelector? selector,
+        HashSet<string> selectedAncestors,
         IReadOnlyDictionary<string, ControlSnapshot> controls)
     {
         if (selector is null)
@@ -331,9 +340,7 @@ public sealed class FuzzyControlResolver
         }
 
         return EnumerateAncestors(control, controls)
-            .Any(parent =>
-                MatchesSnapshotSelector(parent, selector) &&
-                MatchesAncestor(parent, selector.Ancestor, controls));
+            .Any(parent => selectedAncestors.Contains(parent.CandidateId));
     }
 
     private static IEnumerable<ControlSnapshot> EnumerateAncestors(
@@ -359,6 +366,12 @@ public sealed class FuzzyControlResolver
         ControlSnapshot control,
         ControlSelector selector)
     {
+        if (control.Failures.Any(failure =>
+                (failure.Property == "AutomationId" && !string.IsNullOrWhiteSpace(selector.AutomationId)) ||
+                (failure.Property == "Name" && !string.IsNullOrWhiteSpace(selector.Name)) ||
+                (failure.Property == "ControlType" && !string.IsNullOrWhiteSpace(selector.ControlType)) ||
+                (failure.Property == "ClassName" && !string.IsNullOrWhiteSpace(selector.ClassName))))
+            return false;
         if (!string.IsNullOrWhiteSpace(selector.AutomationId) &&
             !string.Equals(
                 control.AutomationId,

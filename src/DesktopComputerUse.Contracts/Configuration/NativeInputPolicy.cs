@@ -14,6 +14,8 @@ public sealed record NativeInputPolicy
 
     public bool RequireForeground { get; init; } = true;
 
+    public bool ActivateBeforeInput { get; init; }
+
     public int MaximumTextLength { get; init; } = 500;
 
     public bool AllowSystemKeys { get; init; }
@@ -24,6 +26,12 @@ public sealed record NativeInputPolicy
         {
             throw new ProfileValidationException(
                 "Native keyboard input requires foreground verification.");
+        }
+
+        if (ActivateBeforeInput && !RequireForeground)
+        {
+            throw new ProfileValidationException(
+                "Native activation before input requires foreground verification.");
         }
 
         if (MaximumTextLength is < 1 or > 10_000)

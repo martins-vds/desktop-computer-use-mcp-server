@@ -42,6 +42,20 @@ internal static class CapturePrivacy
         ApplicationProfile profile,
         CancellationToken cancellationToken)
     {
+        return ReadWithPolicy(profile, () => ReadSensitiveBounds(
+            root, profile.MaxResults,
+            element => IsSensitive(element, profile),
+            element => RequireSensitiveBounds(element.BoundingRectangle),
+            element => element.FindAllChildren(),
+            cancellationToken), cancellationToken);
+    }
+
+    internal static IReadOnlyList<RectangleInfo> ReadWithPolicy(
+        ApplicationProfile profile,
+        Func<IReadOnlyList<RectangleInfo>> readSensitiveBounds,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
         if (!profile.EnableScreenshots)
         {
             throw new AutomationOperationException(
@@ -49,12 +63,7 @@ internal static class CapturePrivacy
                 "Image capture is disabled by the application profile.");
         }
 
-        return ReadSensitiveBounds(
-            root, profile.MaxResults,
-            element => IsSensitive(element, profile),
-            element => RequireSensitiveBounds(element.BoundingRectangle),
-            element => element.FindAllChildren(),
-            cancellationToken);
+        return profile.PrivacyMode ? readSensitiveBounds() : [];
     }
 
     internal static IReadOnlyList<RectangleInfo> ReadSensitiveBounds<T>(
