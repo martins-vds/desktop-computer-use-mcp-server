@@ -88,10 +88,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7.0.1
 
       - name: Set up .NET
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v6.0.0
         with:
           dotnet-version: 10.0.x
 
@@ -130,10 +130,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7.0.1
 
       - name: Set up .NET
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v6.0.0
         with:
           dotnet-version: 10.0.x
 
@@ -222,7 +222,7 @@ jobs:
           "${{ matrix.asset }}-v${{ needs.prepare.outputs.version }}.tar.gz" .
 
       - name: Upload packaged executable
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7.0.1
         with:
           name: ${{ matrix.asset }}-v${{ needs.prepare.outputs.version }}
           path: ${{ matrix.asset }}-v${{ needs.prepare.outputs.version }}.tar.gz
@@ -271,10 +271,10 @@ jobs:
             asset: desktop-computer-use-profile-builder-windows-arm64
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7.0.1
 
       - name: Set up .NET
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v6.0.0
         with:
           dotnet-version: 10.0.x
 
@@ -467,10 +467,10 @@ jobs:
       RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7.0.1
 
       - name: Download packaged executables
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7.0.1
         with:
           path: release-assets
           merge-multiple: true
