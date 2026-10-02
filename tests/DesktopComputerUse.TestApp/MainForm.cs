@@ -56,7 +56,7 @@ internal sealed class MainForm : Form
     private void ConfigureForm()
     {
         Name = "MainForm";
-        AccessibleName = "Desktop computer use test application";
+        AccessibleName = "Desktop Computer Use Test App";
         AccessibleDescription = "A deterministic WinForms fixture for desktop automation tests.";
         Text = "Desktop Computer Use Test App";
         AutoScaleMode = AutoScaleMode.None;

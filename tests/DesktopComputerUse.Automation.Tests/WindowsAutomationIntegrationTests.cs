@@ -13,10 +13,12 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 namespace DesktopComputerUse.Automation.Tests;
 
+[Collection("InteractiveWindows")]
 public sealed class WindowsAutomationIntegrationTests
 {
     [Fact]
     [Trait("Category", "WindowsIntegration")]
+    [Trait("PrivacyMode", "Enabled")]
     public async Task TestApp_supports_launch_find_set_invoke_wait_and_detach()
     {
         if (!OperatingSystem.IsWindows() || !Environment.UserInteractive)
@@ -167,6 +169,71 @@ public sealed class WindowsAutomationIntegrationTests
         }
     }
 
+    [InteractiveWindowsFact]
+    [Trait("Category", "WindowsIntegration")]
+    [Trait("PrivacyMode", "Disabled")]
+    public async Task TestApp_supports_sensitive_reads_writes_and_hwnd_capture_with_privacy_disabled()
+    {
+        Win32DesktopApi.InitializePerMonitorV2();
+        var executable = Environment.GetEnvironmentVariable("DESKTOP_COMPUTER_USE_TEST_APP")!;
+        var profile = TestProfile.Create("privacy-disabled-test", executable) with
+        {
+            MainWindow = new WindowSelector { Title = "Desktop Computer Use Test App" },
+            PrivacyMode = false,
+            EnableScreenshots = true,
+            SensitiveAutomationIds = ["CustomerNameTextBox", "CustomerPasswordTextBox"]
+        };
+        var observer = new ControlObserver();
+        await using var controller = new DesktopAutomationController(
+            new ApplicationProfileStore([profile]), new MtaAutomationWorker(),
+            new FlaUiAutomationFactory(), new ControlSelectorResolver(), observer,
+            new ApplicationSnapshotBuilder(observer), new FuzzyControlResolver(),
+            NullLogger<DesktopAutomationController>.Instance);
+        var launch = await controller.LaunchAsync(profile.Id, CancellationToken.None);
+        Assert.True(launch.Succeeded, launch.Error?.Message);
+        Assert.False(launch.Value!.PrivacyMode);
+        try
+        {
+            var selector = new ControlSelector { AutomationId = "CustomerNameTextBox" };
+            const string value = "Synthetic privacy-off test value";
+            var set = await controller.SetValueAsync(selector, value, CancellationToken.None);
+            Assert.True(set.Succeeded, set.Error?.Message);
+            var read = await controller.GetControlValueAsync(selector, CancellationToken.None);
+            Assert.True(read.Succeeded, read.Error?.Message);
+            Assert.False(read.Value!.PrivacyMode);
+            Assert.False(read.Value.IsValueRedacted);
+            Assert.Equal(value, read.Value.Value);
+
+            var controlCapture = await controller.CaptureControlImageAsync(selector, CancellationToken.None);
+            AssertUnredactedCapture(controlCapture);
+            var passwordCapture = await controller.CaptureControlImageAsync(
+                new ControlSelector { AutomationId = "CustomerPasswordTextBox" }, CancellationToken.None);
+            AssertUnredactedCapture(passwordCapture);
+            var windowCapture = await controller.CaptureApplicationWindowAsync(CancellationToken.None);
+            AssertUnredactedCapture(windowCapture);
+            Assert.NotNull(windowCapture.Value!.Token);
+            Assert.Equal(launch.Value.ProcessId, windowCapture.Value.Token!.Target.ProcessId);
+        }
+        finally
+        {
+            var detach = await controller.DetachAsync(true, CancellationToken.None);
+            Assert.True(detach.Succeeded, detach.Error?.Message);
+        }
+    }
+
+    private static void AssertUnredactedCapture(AutomationResult<WindowCapture> result)
+    {
+        Assert.True(result.Succeeded, result.Error?.Message);
+        var capture = Assert.IsType<WindowCapture>(result.Value);
+        Assert.False(capture.PrivacyMode);
+        Assert.Equal(0, capture.RedactedControlCount);
+        Assert.True(capture.OcclusionSafe);
+        Assert.Equal("image/png", capture.MimeType);
+        Assert.NotEmpty(Convert.FromBase64String(capture.Base64Data));
+        Assert.True(capture.Width > 0);
+        Assert.True(capture.Height > 0);
+    }
+
     private static string? FindTestAppExecutable()
     {
         var configured = Environment.GetEnvironmentVariable(
@@ -185,7 +252,7 @@ public sealed class WindowsAutomationIntegrationTests
                 "DesktopComputerUse.TestApp",
                 "bin",
                 "Debug",
-                "net8.0-windows",
+                "net10.0-windows",
                 "DesktopComputerUse.TestApp.exe");
             if (File.Exists(candidate))
             {

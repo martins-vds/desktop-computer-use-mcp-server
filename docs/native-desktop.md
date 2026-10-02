@@ -149,14 +149,38 @@ Build the solution and test app on Windows, then run the integration category:
 ```powershell
 dotnet build DesktopComputerUse.sln
 $env:DESKTOP_COMPUTER_USE_INTERACTIVE_TESTS = "1"
-$env:DESKTOP_COMPUTER_USE_TEST_APP = (Resolve-Path "tests/DesktopComputerUse.TestApp/bin/Debug/net8.0-windows/DesktopComputerUse.TestApp.exe").Path
+$env:DESKTOP_COMPUTER_USE_TEST_APP = (Resolve-Path "tests/DesktopComputerUse.TestApp/bin/Debug/net10.0-windows/DesktopComputerUse.TestApp.exe").Path
 dotnet test tests/DesktopComputerUse.Automation.Tests --filter Category=WindowsIntegration
 bash scripts/run-quality-analysis.sh
 ```
 
-The quality runner requires Bash, Python 3, .NET 10 SDK, and Stryker.NET. Run
+Qualify both privacy policies separately. The `PrivacyMode=Disabled` integration
+case explicitly allows screenshots and sets `privacyMode:false` on its owned
+fixture profile. It verifies unredacted reads/writes for a configured sensitive
+field, capture of sensitive and password controls, and HWND-only window capture
+with zero redacted controls. Windows/provider password masking is not removed.
+The privacy-enabled cases remain unchanged; passing the disabled case does not
+establish that enabled redaction works with the provider.
+
+To reproduce only the privacy-disabled case after building and setting the
+environment variables above:
+
+```powershell
+dotnet test tests/DesktopComputerUse.Automation.Tests --no-build --no-restore --filter "Category=WindowsIntegration&PrivacyMode=Disabled"
+```
+
+Follow diagnostic reruns with the full quality runner above for Microsoft CRAP
+and complete-level mutation analysis. Native keyboard-input qualification still
+requires foreground activation regardless of privacy mode.
+
+The quality runner requires Bash (Git Bash on Windows, not WSL Bash), Python 3,
+.NET 10 SDK, and Stryker.NET. Run
 `bash scripts/install-quality-tools.sh` to build the pinned
 [Microsoft crap4csharp](https://github.com/microsoft/crap4csharp) analyzer adapter.
+On ARM64 Windows, Stryker's bundled VSTest runner uses an x64 test host, so the
+x64 .NET 10 Windows Desktop Runtime must also be available. Install it alongside
+the ARM64 SDK, or set `DOTNET_ROOT_X64` to a private x64 runtime directory.
+This does not change the SDK selected by `global.json`.
 It merges real coverage from every test assembly before checking
 that every method's CRAP score is strictly below 20, then runs complete-level
 mutation testing without excluding native Windows implementation files.

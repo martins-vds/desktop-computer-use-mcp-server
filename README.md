@@ -4,7 +4,7 @@ An open-source Model Context Protocol server for operating allowlisted Windows d
 
 The native automation implementation uses:
 
-- [.NET 8](https://dotnet.microsoft.com/)
+- [.NET 10](https://dotnet.microsoft.com/)
 - The official [Model Context Protocol C# SDK](https://github.com/modelcontextprotocol/csharp-sdk)
 - [FlaUI](https://github.com/FlaUI/FlaUI) with configurable UIA2 and UIA3 backends
 - Local stdio transport
@@ -56,15 +56,19 @@ Runtime requirements:
 - An interactive signed-in Windows user session
 - The MCP server and target application running as the same user and at compatible integrity levels
 
-Downloaded release executables are self-contained and do not require a separate .NET runtime. Running framework-dependent build output requires the .NET 8 runtime.
+Downloaded release executables are self-contained and do not require a separate .NET runtime. Running framework-dependent build output requires the .NET 10 runtime (Windows Desktop Runtime for Windows components).
 
 Development requirements:
 
-- .NET 8 SDK
-- .NET 10 SDK, Bash, and Python 3 for the quality-analysis tools
+- .NET 10 SDK
+- Bash (Git Bash on Windows) and Python 3 for the quality-analysis tools
 - A Windows host for meaningful UI Automation integration testing
 
 The solution can be cross-built on Linux, but FlaUI actions cannot execute there. The test WinForms fixture compiles as a no-op stub on non-Windows hosts and as the real WinForms application on Windows.
+
+`global.json` selects .NET 10 and rolls forward to the latest installed 10.0 SDK
+feature band. Release runners install the latest `10.0.x` SDK. Portable projects
+target `net10.0`; Windows automation and its tests target `net10.0-windows`.
 
 ## Build
 
@@ -333,7 +337,7 @@ dotnet run --project src/DesktopComputerUse.Server/DesktopComputerUse.Server.csp
 For a built server:
 
 ```powershell
-dotnet src/DesktopComputerUse.Server/bin/Debug/net8.0-windows/DesktopComputerUse.Server.dll
+dotnet src/DesktopComputerUse.Server/bin/Debug/net10.0-windows/DesktopComputerUse.Server.dll
 ```
 
 Self-contained release archives contain an executable named `desktop-computer-use` on Linux or `desktop-computer-use.exe` on Windows.

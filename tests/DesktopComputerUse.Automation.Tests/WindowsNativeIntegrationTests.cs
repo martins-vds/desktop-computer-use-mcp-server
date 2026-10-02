@@ -32,6 +32,7 @@ public sealed class WindowsNativeIntegrationTests
 {
     [InteractiveWindowsFact]
     [Trait("Category", "WindowsIntegration")]
+    [Trait("PrivacyMode", "Enabled")]
     public async Task Native_geometry_input_and_hwnd_capture_operate_only_on_owned_fixture()
     {
         Win32DesktopApi.InitializePerMonitorV2();

@@ -93,7 +93,7 @@ jobs:
       - name: Set up .NET
         uses: actions/setup-dotnet@v4
         with:
-          global-json-file: global.json
+          dotnet-version: 10.0.x
 
       - name: Restore
         run: dotnet restore DesktopComputerUse.sln
@@ -116,13 +116,13 @@ jobs:
       matrix:
         include:
           - rid: linux-x64
-            tfm: net8.0
+            tfm: net10.0
             component: server
             binary: desktop-computer-use
             project: src/DesktopComputerUse.Server.Linux/DesktopComputerUse.Server.Linux.csproj
             asset: desktop-computer-use-linux-x64
           - rid: linux-arm64
-            tfm: net8.0
+            tfm: net10.0
             component: server
             binary: desktop-computer-use
             project: src/DesktopComputerUse.Server.Linux/DesktopComputerUse.Server.Linux.csproj
@@ -135,7 +135,7 @@ jobs:
       - name: Set up .NET
         uses: actions/setup-dotnet@v4
         with:
-          global-json-file: global.json
+          dotnet-version: 10.0.x
 
       - name: Restore publish dependencies
         shell: bash
@@ -246,25 +246,25 @@ jobs:
       matrix:
         include:
           - rid: win-x64
-            tfm: net8.0-windows
+            tfm: net10.0-windows
             component: server
             binary: desktop-computer-use
             project: src/DesktopComputerUse.Server/DesktopComputerUse.Server.csproj
             asset: desktop-computer-use-windows-x64
           - rid: win-arm64
-            tfm: net8.0-windows
+            tfm: net10.0-windows
             component: server
             binary: desktop-computer-use
             project: src/DesktopComputerUse.Server/DesktopComputerUse.Server.csproj
             asset: desktop-computer-use-windows-arm64
           - rid: win-x64
-            tfm: net8.0-windows
+            tfm: net10.0-windows
             component: profile-builder
             binary: desktop-computer-use-profile-builder
             project: src/DesktopComputerUse.ProfileBuilder/DesktopComputerUse.ProfileBuilder.csproj
             asset: desktop-computer-use-profile-builder-windows-x64
           - rid: win-arm64
-            tfm: net8.0-windows
+            tfm: net10.0-windows
             component: profile-builder
             binary: desktop-computer-use-profile-builder
             project: src/DesktopComputerUse.ProfileBuilder/DesktopComputerUse.ProfileBuilder.csproj
@@ -276,7 +276,7 @@ jobs:
       - name: Set up .NET
         uses: actions/setup-dotnet@v4
         with:
-          global-json-file: global.json
+          dotnet-version: 10.0.x
 
       - name: Restore publish dependencies
         shell: bash

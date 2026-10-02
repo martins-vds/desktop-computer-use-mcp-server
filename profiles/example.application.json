@@ -2,7 +2,7 @@
   "schemaVersion": 2,
   "id": "test-winforms-app",
   "displayName": "Desktop Computer Use Test App",
-  "executablePath": "../tests/DesktopComputerUse.TestApp/bin/Debug/net8.0-windows/DesktopComputerUse.TestApp.exe",
+  "executablePath": "../tests/DesktopComputerUse.TestApp/bin/Debug/net10.0-windows/DesktopComputerUse.TestApp.exe",
   "backend": "uia3",
   "mainWindow": {
     "title": "Desktop Computer Use Test App"

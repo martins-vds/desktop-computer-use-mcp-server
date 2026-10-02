@@ -6,9 +6,13 @@ quality_directory="${1:-artifacts/quality}"
 
 cd "$repo_root"
 
-crap_runner="$repo_root/scripts/QualityAnalysis/bin/Release/net8.0/QualityAnalysis.dll"
+crap_runner="$repo_root/scripts/QualityAnalysis/bin/Release/net10.0/QualityAnalysis.dll"
+stryker_runner="$repo_root/.tools/dotnet-stryker"
+if [[ -x "$stryker_runner.exe" ]]; then
+  stryker_runner="$stryker_runner.exe"
+fi
 if [[ ! -f "$crap_runner" ]] ||
-   [[ ! -x "$repo_root/.tools/dotnet-stryker" ]]; then
+   [[ ! -x "$stryker_runner" ]]; then
   echo "Quality tools are missing. Run scripts/install-quality-tools.sh first." >&2
   exit 1
 fi
@@ -32,11 +36,11 @@ crap_exit=$?
 set -e
 
 set +e
-.tools/dotnet-stryker \
+"$stryker_runner" \
   --test-project tests/DesktopComputerUse.Automation.Tests/DesktopComputerUse.Automation.Tests.csproj \
   --test-project tests/DesktopComputerUse.Native.Tests/DesktopComputerUse.Native.Tests.csproj \
   --project src/DesktopComputerUse.Automation/DesktopComputerUse.Automation.csproj \
-  --target-framework net8.0-windows \
+  --target-framework net10.0-windows \
   --mutation-level Complete \
   --mutate '**/Resolution/*.cs' \
   --mutate '**/Profiles/*.cs' \
@@ -66,11 +70,11 @@ set +e
   --threshold-high 90
 automation_mutation_exit=$?
 
-.tools/dotnet-stryker \
+"$stryker_runner" \
   --test-project tests/DesktopComputerUse.Automation.Tests/DesktopComputerUse.Automation.Tests.csproj \
   --test-project tests/DesktopComputerUse.Native.Tests/DesktopComputerUse.Native.Tests.csproj \
   --project src/DesktopComputerUse.Contracts/DesktopComputerUse.Contracts.csproj \
-  --target-framework net8.0 \
+  --target-framework net10.0 \
   --mutation-level Complete \
   --mutate '**/*.cs' \
   --reporter ClearText \

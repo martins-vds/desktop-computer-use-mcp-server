@@ -29,7 +29,7 @@ fi
 temporary_directory="$(mktemp -d)"
 trap 'rm -rf "$temporary_directory"' EXIT
 
-if [[ ! -x "$repo_root/.tools/dotnet-stryker" ]]; then
+if [[ ! -x "$repo_root/.tools/dotnet-stryker" && ! -x "$repo_root/.tools/dotnet-stryker.exe" ]]; then
   (
     cd "$temporary_directory"
     dotnet tool install dotnet-stryker \

@@ -2,6 +2,11 @@
 
 GitHub releases are produced by [`.github/workflows/release.yml`](../.github/workflows/release.yml).
 
+Release jobs use the latest .NET 10 SDK. Portable artifacts target `net10.0`,
+Windows artifacts target `net10.0-windows`, and all archives remain self-contained.
+Framework-dependent Windows builds require the .NET 10 Windows Desktop Runtime;
+downloaded release executables do not require a separately installed runtime.
+
 ## Version source
 
 The release tag is the single version source and must use:
